@@ -1,5 +1,8 @@
 #!/usr/bin/env python
 from distutils.core import setup
+from pip.req import parse_requirements
+
+install_reqs = parse_requirements('requirements.txt', session=False)
 
 setup(name='maltrieve',
       version='0.7',
@@ -7,23 +10,7 @@ setup(name='maltrieve',
       author='Kyle Maxwell',
       author_email='krmaxwell@gmail.com',
       url='http://maltrieve.org',
-      install_requires=[
-          'argparse>=1.2.1',
-          'beautifulsoup4>=4.3.2',
-          'feedparser>=5.1.3',
-          'gevent>=1.0.1',
-          'greenlet>=0.4.2',
-          'grequests>=0.2.0',
-          'python-magic>=0.4.6',
-          'requests>=2.3.0',
-          'wsgiref>=0.1.2',
-          'pre-commit',
-          'pytest',
-          'pytest-cov',
-          'coveralls',
-          'LinkChecker',
-          'markdown'
-      ],
+      install_requires=[str(ir.req) for ir in install_reqs]
       package_dir={'maltrieve': 'src'},
       packages=['maltrieve'],
       entry_points={'console_scripts': ['maltrieve =  maltrieve:main']})

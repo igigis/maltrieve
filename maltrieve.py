@@ -18,6 +18,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/
 
+from __future__ import print_function
+
 import argparse
 import ConfigParser
 import datetime
@@ -119,7 +121,15 @@ class config(object):
         # TODO: Merge these
         self.vxcage = args.vxcage or self.configp.has_option('Maltrieve', 'vxcage')
         self.cuckoo = args.cuckoo or self.configp.has_option('Maltrieve', 'cuckoo')
+        self.cuckoo_dist = args.cuckoo_dist
+        if not self.cuckoo_dist and self.configp.has_option('Maltrieve', 'cuckoo_dist'):
+            self.cuckoo_dist = self.configp.get('Maltrieve', 'cuckoo_dist')
+
         self.viper = args.viper or self.configp.has_option('Maltrieve', 'viper')
+
+        self.malshare_key = args.malshare_key
+        if not self.malshare_key and self.configp.has_option('Maltrieve', 'malshare_key'):
+            self.malshare_key = self.configp.get('Maltrieve', 'malshare_key')
 
         # CRITs
         if args.crits or self.configp.has_option('Maltrieve', 'crits'):
@@ -135,7 +145,7 @@ class config(object):
             logging.info('Using proxy %s', self.proxy)
             my_ip = requests.get('http://ipinfo.io/ip', proxies=self.proxy).text
             logging.info('External sites see %s', my_ip)
-            print 'External sites see {ip}'.format(ip=my_ip)
+            print('External sites see {ip}'.format(ip=my_ip))
 
 
 def upload_crits(response, md5, cfg):
@@ -276,6 +286,23 @@ def upload_cuckoo(response, md5, cfg):
         else:
             return True
 
+# This gives cuckoo the URL instead of the file.
+def upload_cuckoo_dist(response, md5, cfg):
+    if response:
+        data = {'priority': int(cfg.get('cuckoo_priority', 2))}
+        files = {'file': (md5, response.content)}
+        url = cfg.cuckoo_dist + "/api/task"
+        headers = {'User-agent': 'Maltrieve'}
+        try:
+            response = requests.post(url, headers=headers, data=data, files=files)
+            response_data = response.json()
+            logging.info("Submitted %s to Cuckoo, task ID %d", md5, response_data["task_id"])
+        except requests.exceptions.ConnectionError:
+            logging.info("Could not connect to Cuckoo, will attempt local storage")
+            return False
+        else:
+            return True
+
 
 def upload_viper(response, md5, cfg):
     if response:
@@ -323,6 +350,8 @@ def save_malware(response, cfg):
         stored = upload_vxcage(response, md5, cfg) or stored
     if cfg.cuckoo:
         stored = upload_cuckoo(response, md5, cfg) or stored
+    if cfg.cuckoo_dist:
+        stored = upload_cuckoo_dist(response, md5, cfg) or stored
     if cfg.viper:
         stored = upload_viper(response, md5, cfg) or stored
     if cfg.crits:
@@ -382,6 +411,26 @@ def process_urlquery(response):
     return urls
 
 
+def process_malwaredb(response):
+    # malwaredb.malekal.com
+    return set([
+        "http://malwaredb.malekal.com/files.php?file=%s" % (match,)
+        for match in re.findall(r'files.php\?file=([a-f0-9]+)"', response, re.MULTILINE)
+    ])
+
+
+def process_malshare(response, cfg):
+    # https://github.com/robbyFux/Ragpicker/blob/master/src/crawler/malShare.py
+    api_key = cfg.malshare_key
+    if not api_key:
+        raise Exception("MalShare API key not configured, skip")
+    return set([
+        "http://api.malshare.com/sampleshare.php?action=getfile&api_key=%s&hash=%s" % (api_key, file_hash)
+        for file_hash in response.split('\n')
+    ])
+
+
+
 def chunker(seq, size):
     return (seq[pos:pos + size] for pos in xrange(0, len(seq), size))
 
@@ -406,6 +455,10 @@ def setup_args(args):
                         action="store_true", default=False)
     parser.add_argument("-c", "--cuckoo",
                         help="Enable Cuckoo analysis", action="store_true", default=False)
+    parser.add_argument("-C", "--cuckoo-dist",
+                        help="Enable Distributed Cuckoo analysis", default=None)
+    parser.add_argument("--malshare-key",
+                        help="Malshare key", default=None)
     parser.add_argument("-s", "--sort_mime",
                         help="Sort files by MIME type", action="store_true", default=False)
     parser.add_argument("--config", help="Alternate config file (default maltrieve.cfg)")
@@ -463,36 +516,42 @@ def main():
     hashes = load_hashes('hashes.json')
     past_urls = load_urls('urls.json')
 
-    print "Processing source URLs"
+    print("Processing source URLs")
 
     # TODO: Replace with plugins
-    source_urls = {'https://zeustracker.abuse.ch/monitor.php?urlfeed=binaries': process_xml_list_desc,
-                   'http://www.malwaredomainlist.com/hostslist/mdl.xml': process_xml_list_desc,
-                   'http://malc0de.com/rss/': process_xml_list_desc,
-                   'http://vxvault.net/URL_List.php': process_simple_list,
-                   'http://urlquery.net/': process_urlquery,
-                   'http://support.clean-mx.de/clean-mx/rss?scope=viruses&limit=0%2C64': process_xml_list_title,
-                   'http://malwareurls.joxeankoret.com/normal.txt': process_simple_list}
+    source_urls = {
+        #'https://zeustracker.abuse.ch/monitor.php?urlfeed=binaries': process_xml_list_desc,
+        #'http://www.malwaredomainlist.com/hostslist/mdl.xml': process_xml_list_desc,
+        #'http://malc0de.com/rss/': process_xml_list_desc,
+        #'http://vxvault.net/URL_List.php': process_simple_list,
+        #'http://urlquery.net/': process_urlquery,
+        #'http://support.clean-mx.de/clean-mx/rss?scope=viruses&limit=0%2C64': process_xml_list_title,
+        #'http://malwareurls.joxeankoret.com/normal.txt': process_simple_list,
+        #'http://malwaredb.malekal.com/': process_malwaredb
+    }
+    if cfg.malshare_key:
+        source_urls['http://www.malshare.com/daily/malshare.current.txt'] = lambda x: process_malshare(x, cfg)
     headers = {'User-Agent': 'Maltrieve'}
 
-    reqs = [grequests.get(url, timeout=60, headers=headers, proxies=cfg.proxy) for url in source_urls]
+    reqs = [grequests.get(url, timeout=60, headers=headers, proxies=cfg.proxy)
+            for url in source_urls]
     source_lists = grequests.map(reqs)
 
-    print "Completed source processing"
+    print("Processing found malware links")
 
     headers['User-Agent'] = cfg.useragent
     malware_urls = set()
     for response in source_lists:
-        if hasattr(response, 'status_code') and response.status_code == 200:
-            malware_urls.update(source_urls[response.url](response.text))
+        if hasattr(response, 'status_code') and response.status_code == 200:            
+            found_urls = source_urls[response.url](response.text)
+            malware_urls.update(found_urls)
 
     if cfg.inputfile:
         with open(cfg.inputfile, 'rb') as f:
             moar_urls = list(f)
         malware_urls.update(moar_urls)
 
-    print "Downloading samples, check log for details"
-
+    print("Downloading %d malware samples" % (len(malware_urls),))
     malware_urls -= past_urls
     reqs = [grequests.get(url, timeout=60, headers=headers, proxies=cfg.proxy) for url in malware_urls]
     for chunk in chunker(reqs, 32):
@@ -503,7 +562,7 @@ def main():
             if save_malware(each, cfg):
                 past_urls.add(each.url)
 
-    print "Completed downloads"
+    print("Completed downloads")
 
     save_urls(past_urls, 'urls.json')
     save_hashes(hashes, 'hashes.json')

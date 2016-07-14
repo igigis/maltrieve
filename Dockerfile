@@ -12,7 +12,7 @@
 #
 # sudo docker run --rm -it technoskald/maltrieve
 
-FROM ubuntu:14.04
+FROM ubuntu:16.04
 MAINTAINER Michael Boman <michael@michaelboman.org>
 
 USER root
@@ -22,28 +22,32 @@ RUN apt-get install -y --no-install-recommends \
     gcc \
     git \
     libpython2.7-stdlib \
+    libmagic1 \
     python2.7 \
     python2.7-dev \
     python-pip \
     python-setuptools
+
 RUN rm -rf /var/lib/apt/lists/* && \
   pip install --upgrade pip && \
   groupadd -r maltrieve && \
   useradd -r -g maltrieve -d /home/maltrieve -s /sbin/nologin -c "Maltrieve User" maltrieve
 
-WORKDIR /home
-RUN git clone https://github.com/krmaxwell/maltrieve.git && \
-  cd maltrieve && \
-  git checkout dev && \
-  pip install -e . && \
-  chown -R maltrieve:maltrieve /home/maltrieve
-
 RUN mkdir /archive && \
   chown maltrieve:maltrieve /archive
+
+WORKDIR /home
+RUN mkdir /home/maltrieve
+COPY requirements.txt maltrieve/
+RUN pip install -r /home/maltrieve/requirements.txt
+
+COPY . /home/maltrieve
+RUN cd maltrieve && \
+  chown -R maltrieve:maltrieve /home/maltrieve
 
 USER maltrieve
 ENV HOME /home/maltrieve
 ENV USER maltrieve
 WORKDIR /home/maltrieve
-ENTRYPOINT ["maltrieve"]
+ENTRYPOINT ["/home/maltrieve/maltrieve.py"]
 CMD ["-d", "/archive/samples", "-l", "/archive/maltrieve.log"]
