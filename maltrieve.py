@@ -520,14 +520,14 @@ def main():
 
     # TODO: Replace with plugins
     source_urls = {
-        #'https://zeustracker.abuse.ch/monitor.php?urlfeed=binaries': process_xml_list_desc,
-        #'http://www.malwaredomainlist.com/hostslist/mdl.xml': process_xml_list_desc,
-        #'http://malc0de.com/rss/': process_xml_list_desc,
-        #'http://vxvault.net/URL_List.php': process_simple_list,
-        #'http://urlquery.net/': process_urlquery,
-        #'http://support.clean-mx.de/clean-mx/rss?scope=viruses&limit=0%2C64': process_xml_list_title,
-        #'http://malwareurls.joxeankoret.com/normal.txt': process_simple_list,
-        #'http://malwaredb.malekal.com/': process_malwaredb
+        'https://zeustracker.abuse.ch/monitor.php?urlfeed=binaries': process_xml_list_desc,
+        'http://www.malwaredomainlist.com/hostslist/mdl.xml': process_xml_list_desc,
+        'http://malc0de.com/rss/': process_xml_list_desc,
+        'http://vxvault.net/URL_List.php': process_simple_list,
+        'http://urlquery.net/': process_urlquery,
+        'http://support.clean-mx.de/clean-mx/rss?scope=viruses&limit=0%2C64': process_xml_list_title,
+        'http://malwareurls.joxeankoret.com/normal.txt': process_simple_list,
+        'http://malwaredb.malekal.com/': process_malwaredb
     }
     if cfg.malshare_key:
         source_urls['http://www.malshare.com/daily/malshare.current.txt'] = lambda x: process_malshare(x, cfg)
