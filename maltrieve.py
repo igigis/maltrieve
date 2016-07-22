@@ -45,7 +45,7 @@ class config(object):
     """ Class for holding global configuration setup """
 
     def __init__(self, args, filename='maltrieve.cfg'):
-        self.configp = ConfigParser.ConfigParser()
+        self.configp = ConfigParser.ConfigParser(os.environ)
         self.configp.read(filename)
 
         if args.logfile or self.configp.get('Maltrieve', 'logfile'):
@@ -121,6 +121,11 @@ class config(object):
         # TODO: Merge these
         self.vxcage = args.vxcage or self.configp.has_option('Maltrieve', 'vxcage')
         self.cuckoo = args.cuckoo or self.configp.has_option('Maltrieve', 'cuckoo')
+
+	self.priority = args.priority
+	if not self.priority and self.configp.has_option('Maltrieve', 'priority'):
+		self.priority = self.configp.get('Maltrieve', 'priority')
+
         self.cuckoo_dist = args.cuckoo_dist
         if not self.cuckoo_dist and self.configp.has_option('Maltrieve', 'cuckoo_dist'):
             self.cuckoo_dist = self.configp.get('Maltrieve', 'cuckoo_dist')
@@ -289,7 +294,7 @@ def upload_cuckoo(response, md5, cfg):
 # This gives cuckoo the URL instead of the file.
 def upload_cuckoo_dist(response, md5, cfg):
     if response:
-        data = {'priority': int(cfg.get('cuckoo_priority', 2))}
+        data = {'priority': int(cfg.priority)}
         files = {'file': (md5, response.content)}
         url = cfg.cuckoo_dist + "/api/task"
         headers = {'User-agent': 'Maltrieve'}
@@ -403,7 +408,7 @@ def process_simple_list(response):
 
 
 def process_urlquery(response):
-    soup = BeautifulSoup(response)
+    soup = BeautifulSoup(response, "html.parser")
     urls = set()
     for t in soup.find_all("table", class_="test"):
         for a in t.find_all("a"):
@@ -453,6 +458,8 @@ def setup_args(args):
     parser.add_argument("-x", "--vxcage",
                         help="Dump the file to a VxCage instance",
                         action="store_true", default=False)
+    parser.add_argument("-P", "--priority",
+                        help="Cuckoo sample priority", default=2)
     parser.add_argument("-c", "--cuckoo",
                         help="Enable Cuckoo analysis", action="store_true", default=False)
     parser.add_argument("-C", "--cuckoo-dist",
