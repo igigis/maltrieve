@@ -117,10 +117,13 @@ def map(requests, stream=False, size=None, exception_handler=None):
     ret = []
 
     for request in requests:
-        if request.response:
-            ret.append(request.response)
-        elif exception_handler:
-            exception_handler(request, request.exception)
+        try:
+            if request.response:
+                ret.append(request.response)
+            elif exception_handler:
+                exception_handler(request, request.exception)
+        except Exception:
+            print("Failed to handle request %r" % (request,))
 
     return ret
 
