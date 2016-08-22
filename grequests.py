@@ -74,6 +74,9 @@ class AsyncRequest(object):
             self.exception = e
         return self
 
+    def __repr__(self):
+        return "AsyncRequest<%r,%r>" % (self.method, self.url)
+
 
 def send(r, pool=None, stream=False):
     """Sends the request object using the specified pool. If a pool isn't

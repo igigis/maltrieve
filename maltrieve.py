@@ -68,7 +68,7 @@ class config(object):
             self.proxy = None
 
         if self.configp.has_option('Maltrieve', 'User-Agent'):
-            self.useragent = {'User-Agent': self.configp.get('Maltrieve', 'User-Agent')}
+            self.useragent = self.configp.get('Maltrieve', 'User-Agent')
         else:
             # Default to IE 9
             self.useragent = "Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 7.1; Trident/5.0)"
@@ -545,7 +545,6 @@ def main():
     source_lists = grequests.map(reqs)
 
     print("Processing found malware links")
-
     headers['User-Agent'] = cfg.useragent
     malware_urls = set()
     for response in source_lists:
@@ -560,7 +559,8 @@ def main():
 
     print("Downloading %d malware samples" % (len(malware_urls),))
     malware_urls -= past_urls
-    reqs = [grequests.get(url, timeout=60, headers=headers, proxies=cfg.proxy) for url in malware_urls]
+    reqs = [grequests.get(url, timeout=60, headers=headers, proxies=cfg.proxy)
+	    for url in malware_urls]
     for chunk in chunker(reqs, 32):
         malware_downloads = grequests.map(chunk)
         for each in malware_downloads:
