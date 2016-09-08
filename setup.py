@@ -10,7 +10,7 @@ setup(name='maltrieve',
       author='Kyle Maxwell',
       author_email='krmaxwell@gmail.com',
       url='http://maltrieve.org',
-      install_requires=[str(ir.req) for ir in install_reqs]
+      install_requires=[str(ir.req) for ir in install_reqs],
       package_dir={'maltrieve': 'src'},
       packages=['maltrieve'],
       entry_points={'console_scripts': ['maltrieve =  maltrieve:main']})
