@@ -120,7 +120,9 @@ class config(object):
 
         # TODO: Merge these
         self.vxcage = args.vxcage or self.configp.has_option('Maltrieve', 'vxcage')
-        self.cuckoo = args.cuckoo or self.configp.has_option('Maltrieve', 'cuckoo')
+        self.cuckoo = args.cuckoo
+        if self.configp.has_option('Maltrieve', 'cuckoo'):
+            self.cuckoo = self.configp.get('Maltrieve', 'cuckoo')
 
 	self.priority = args.priority
 	if not self.priority and self.configp.has_option('Maltrieve', 'priority'):
@@ -278,11 +280,11 @@ def upload_vxcage(response, md5, cfg):
 # This gives cuckoo the URL instead of the file.
 def upload_cuckoo(response, md5, cfg):
     if response:
-        data = {'url': response.url}
-        url = "{srv}/tasks/create/url".format(srv=cfg.cuckoo)
+        files = {'file': (md5, response.content)}
+        url = cfg.cuckoo + "/tasks/create/file"
         headers = {'User-agent': 'Maltrieve'}
         try:
-            response = requests.post(url, headers=headers, data=data)
+            response = requests.post(url, headers=headers, files=files)
             response_data = response.json()
             logging.info("Submitted %s to Cuckoo, task ID %d", md5, response_data["task_id"])
         except requests.exceptions.ConnectionError:
@@ -332,6 +334,7 @@ def save_malware(response, cfg):
     url = response.url
     data = response.content
     mime_type = magic.from_buffer(data, mime=True)
+    print("Saving malware:", url, mime_type)
     if mime_type in cfg.black_list:
         logging.info('%s in ignore list for %s', mime_type, url)
         return False
@@ -561,7 +564,9 @@ def main():
     malware_urls -= past_urls
     reqs = [grequests.get(url, timeout=60, headers=headers, proxies=cfg.proxy)
 	    for url in malware_urls]
-    for chunk in chunker(reqs, 32):
+    for chunk in chunker(reqs, 5):
+        for url in chunk:
+            print("  - ", url)
         malware_downloads = grequests.map(chunk)
         for each in malware_downloads:
             if not each or each.status_code != 200:

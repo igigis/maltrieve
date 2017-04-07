@@ -5,7 +5,9 @@ gevent>=1.0.1
 greenlet>=0.4.2
 grequests>=0.2.0
 python-magic>=0.4.6
+pysocks
 requests>=2.3.0
+requests[socks]
 wsgiref>=0.1.2
 pre-commit
 pytest

@@ -15,6 +15,13 @@
 FROM ubuntu:16.04
 MAINTAINER Michael Boman <michael@michaelboman.org>
 
+USER maltrieve
+ENV HOME /home/maltrieve
+ENV USER maltrieve
+WORKDIR /archive
+ENTRYPOINT ["/home/maltrieve/maltrieve.py"]
+CMD ["-d", "/archive/samples", "-l", "/archive/maltrieve.log", "--config", "/home/maltrieve/maltrieve.cfg"]
+
 USER root
 RUN apt-get update && \
   apt-get dist-upgrade -y
@@ -33,11 +40,12 @@ RUN rm -rf /var/lib/apt/lists/* && \
   groupadd -r maltrieve && \
   useradd -r -g maltrieve -d /home/maltrieve -s /sbin/nologin -c "Maltrieve User" maltrieve
 
-RUN mkdir /archive && \
+RUN mkdir -p /archive && \
   chown maltrieve:maltrieve /archive
 
 WORKDIR /home
-RUN mkdir /home/maltrieve
+RUN mkdir -p /home/maltrieve
+
 COPY requirements.txt maltrieve/
 RUN pip install -r /home/maltrieve/requirements.txt
 
@@ -45,9 +53,3 @@ COPY . /home/maltrieve
 RUN cd maltrieve && \
   chown -R maltrieve:maltrieve /home/maltrieve
 
-USER maltrieve
-ENV HOME /home/maltrieve
-ENV USER maltrieve
-WORKDIR /archive
-ENTRYPOINT ["/home/maltrieve/maltrieve.py"]
-CMD ["-d", "/archive/samples", "-l", "/archive/maltrieve.log", "--config", "/home/maltrieve/maltrieve.cfg"]
