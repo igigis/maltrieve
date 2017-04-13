@@ -33,11 +33,30 @@ import sys
 import tempfile
 from urlparse import urlparse
 
+import sqlite3
 import feedparser
 import grequests
 import magic
 import requests
 from bs4 import BeautifulSoup
+
+
+"""
+TODO:
+ * add malware sources
+   - http://malwaria.cf/
+   - https://malwared.malwaremustdie.org/rss_bin.php
+   - http://malwareurls.joxeankoret.com/normal.txt
+   - http://www.virussign.com/malwarelist.html
+   - http://labs.sucuri.net/?malware
+   - http://malc0de.com/database/
+   - https://zeustracker.abuse.ch/monitor.php?browse=binaries
+   - https://avcaesar.malware.lu/
+   - http://www.offensivecomputing.net/
+   - http://jsunpack.jeek.org/?list=1
+   - http://malwaredb.malekal.com/
+   - http://www.malwaredomainlist.com/mdl.php
+"""
 
 
 class config(object):
@@ -119,7 +138,6 @@ class config(object):
         self.logheaders = self.configp.get('Maltrieve', 'logheaders')
 
         # TODO: Merge these
-        self.vxcage = args.vxcage or self.configp.has_option('Maltrieve', 'vxcage')
         self.cuckoo = args.cuckoo
         if self.configp.has_option('Maltrieve', 'cuckoo'):
             self.cuckoo = self.configp.get('Maltrieve', 'cuckoo')
@@ -132,20 +150,9 @@ class config(object):
         if not self.cuckoo_dist and self.configp.has_option('Maltrieve', 'cuckoo_dist'):
             self.cuckoo_dist = self.configp.get('Maltrieve', 'cuckoo_dist')
 
-        self.viper = args.viper or self.configp.has_option('Maltrieve', 'viper')
-
         self.malshare_key = args.malshare_key
         if not self.malshare_key and self.configp.has_option('Maltrieve', 'malshare_key'):
             self.malshare_key = self.configp.get('Maltrieve', 'malshare_key')
-
-        # CRITs
-        if args.crits or self.configp.has_option('Maltrieve', 'crits'):
-            self.crits = self.configp.get('Maltrieve', 'crits')
-            self.crits_user = self.configp.get('Maltrieve', 'crits_user')
-            self.crits_key = self.configp.get('Maltrieve', 'crits_key')
-            self.crits_source = self.configp.get('Maltrieve', 'crits_source')
-        else:
-            self.crits = False
 
     def check_proxy(self):
         if self.proxy:
@@ -153,129 +160,6 @@ class config(object):
             my_ip = requests.get('http://ipinfo.io/ip', proxies=self.proxy).text
             logging.info('External sites see %s', my_ip)
             print('External sites see {ip}'.format(ip=my_ip))
-
-
-def upload_crits(response, md5, cfg):
-    if response:
-        url_tag = urlparse(response.url)
-        mime_type = magic.from_buffer(response.content, mime=True)
-        files = {'filedata': (md5, response.content)}
-        headers = {'User-agent': 'Maltrieve'}
-        zip_files = ['application/zip', 'application/gzip', 'application/x-7z-compressed']
-        rar_files = ['application/x-rar-compressed']
-        inserted_domain = False
-        inserted_sample = False
-
-        # submit domain / IP
-        # TODO: identify if it is a domain or IP and submit accordingly
-        url = "{srv}/api/v1/domains/".format(srv=cfg.crits)
-        domain_data = {
-            'api_key': cfg.crits_key,
-            'username': cfg.crits_user,
-            'source': cfg.crits_source,
-            'domain': url_tag.netloc
-        }
-        try:
-            # Note that this request does NOT go through proxies
-            logging.debug("Domain submission: %s|%r", url, domain_data)
-            domain_response = requests.post(url, headers=headers, data=domain_data, verify=False)
-            # pylint says "Instance of LookupDict has no 'ok' member" but it's wrong, I checked
-            if domain_response.status_code == requests.codes.ok:
-                domain_response_data = domain_response.json()
-                if domain_response_data['return_code'] == 0:
-                    inserted_domain = True
-                else:
-                    logging.info("Submitted domain info %s for %s to CRITs, response was %s",
-                                 domain_data['domain'], md5, domain_response_data)
-            else:
-                logging.info("Submission of %s failed: %d", url, domain_response.status_code)
-        except requests.exceptions.ConnectionError:
-            logging.info("Could not connect to CRITs when submitting domain %s", domain_data['domain'])
-        except requests.exceptions.HTTPError:
-            logging.info("HTTP error when submitting domain %s to CRITs", domain_data['domain'])
-
-        # Submit sample
-        url = "{srv}/api/v1/samples/".format(srv=cfg.crits)
-        if mime_type in zip_files:
-            file_type = 'zip'
-        elif mime_type in rar_files:
-            file_type = 'rar'
-        else:
-            file_type = 'raw'
-        sample_data = {
-            'api_key': cfg.crits_key,
-            'username': cfg.crits_user,
-            'source': cfg.crits_source,
-            'upload_type': 'file',
-            'md5': md5,
-            'file_format': file_type  # must be type zip, rar, or raw
-        }
-        try:
-            # Note that this request does NOT go through proxies
-            sample_response = requests.post(url, headers=headers, files=files, data=sample_data, verify=False)
-            # pylint says "Instance of LookupDict has no 'ok' member" but it's wrong, I checked
-            if sample_response.status_code == requests.codes.ok:
-                sample_response_data = sample_response.json()
-                if sample_response_data['return_code'] == 0:
-                    inserted_sample = True
-                else:
-                    logging.info("Submitted sample %s to CRITs, response was %r", md5, sample_response_data)
-            else:
-                logging.info("Submission of sample %s failed: %d}", md5, sample_response.status_code)
-        except requests.exceptions.ConnectionError:
-            logging.info("Could not connect to CRITs when submitting sample %s", md5)
-        except requests.exceptions.HTTPError:
-            logging.info("HTTP error when submitting sample %s to CRITs", md5)
-
-        # Create a relationship for the sample and domain
-        url = "{srv}/api/v1/relationships/".format(srv=cfg.crits)
-        if (inserted_sample and inserted_domain):
-            relationship_data = {
-                'api_key': cfg.crits_key,
-                'username': cfg.crits_user,
-                'source': cfg.crits_source,
-                'right_type': domain_response_data['type'],
-                'right_id': domain_response_data['id'],
-                'left_type': sample_response_data['type'],
-                'left_id': sample_response_data['id'],
-                'rel_type': 'Downloaded_From',
-                'rel_confidence': 'high',
-                'rel_date': datetime.datetime.now()
-            }
-            try:
-                # Note that this request does NOT go through proxies
-                relationship_response = requests.post(url, headers=headers, data=relationship_data, verify=False)
-                # pylint says "Instance of LookupDict has no 'ok' member"
-                if relationship_response.status_code != requests.codes.ok:
-                    logging.info("Submitted relationship info for %s to CRITs, response was %r",
-                                 md5, domain_response_data)
-            except requests.exceptions.ConnectionError:
-                logging.info("Could not connect to CRITs when submitting relationship for sample %s", md5)
-            except requests.exceptions.HTTPError:
-                logging.info("HTTP error when submitting relationship for sample %s to CRITs", md5)
-                return True
-        else:
-            return False
-
-
-def upload_vxcage(response, md5, cfg):
-    if response:
-        url_tag = urlparse(response.url)
-        files = {'file': (md5, response.content)}
-        tags = {'tags': url_tag.netloc + ',Maltrieve'}
-        url = "{srv}/malware/add".format(srv=cfg.vxcage)
-        headers = {'User-agent': 'Maltrieve'}
-        try:
-            # Note that this request does NOT go through proxies
-            response = requests.post(url, headers=headers, files=files, data=tags)
-            response_data = response.json()
-            logging.info("Submitted %s to VxCage, response was %d", md5, response_data["message"])
-        except requests.exceptions.ConnectionError:
-            logging.info("Could not connect to VxCage, will attempt local storage")
-            return False
-        else:
-            return True
-
 
 # This gives cuckoo the URL instead of the file.
 def upload_cuckoo(response, md5, cfg):
@@ -311,24 +195,6 @@ def upload_cuckoo_dist(response, md5, cfg):
             return True
 
 
-def upload_viper(response, md5, cfg):
-    if response:
-        url_tag = urlparse(response.url)
-        files = {'file': (md5, response.content)}
-        tags = {'tags': url_tag.netloc + ',Maltrieve'}
-        url = "{srv}/file/add".format(srv=cfg.viper)
-        headers = {'User-agent': 'Maltrieve'}
-        try:
-            # Note that this request does NOT go through proxies
-            response = requests.post(url, headers=headers, files=files, data=tags)
-            response_data = response.json()
-            logging.info("Submitted %s to Viper, response was %s", md5, response_data["message"])
-        except requests.exceptions.ConnectionError:
-            logging.info("Could not connect to Viper, will attempt local storage")
-            return False
-        else:
-            return True
-
 
 def save_malware(response, cfg):
     url = response.url
@@ -354,16 +220,10 @@ def save_malware(response, cfg):
     # Submit to external services
 
     # TODO: merge these
-    if cfg.vxcage:
-        stored = upload_vxcage(response, md5, cfg) or stored
     if cfg.cuckoo:
         stored = upload_cuckoo(response, md5, cfg) or stored
     if cfg.cuckoo_dist:
         stored = upload_cuckoo_dist(response, md5, cfg) or stored
-    if cfg.viper:
-        stored = upload_viper(response, md5, cfg) or stored
-    if cfg.crits:
-        stored = upload_crits(response, md5, cfg) or stored
     # else save to disk
     if not stored:
         if cfg.sort_mime:
@@ -452,15 +312,6 @@ def setup_args(args):
     parser.add_argument("-i", "--inputfile", help="File of URLs to process")
     parser.add_argument("-l", "--logfile",
                         help="Define file for logging progress")
-    parser.add_argument("-r", "--crits",
-                        help="Dump the file to a Crits instance.",
-                        action="store_true", default=False)
-    parser.add_argument("-v", "--viper",
-                        help="Dump the files to a Viper instance",
-                        action="store_true", default=False)
-    parser.add_argument("-x", "--vxcage",
-                        help="Dump the file to a VxCage instance",
-                        action="store_true", default=False)
     parser.add_argument("-P", "--priority",
                         help="Cuckoo sample priority", default=2)
     parser.add_argument("-c", "--cuckoo",
@@ -486,35 +337,54 @@ def load_hashes(filename="hashes.json"):
     return hashes
 
 
-def save_hashes(hashes, filename='hashes.json'):
-    logging.info('Dumping hashes to %s', filename)
-    with open(filename, 'w') as hashfile:
-        json.dump(list(hashes), hashfile, indent=2)
 
+class MalwareDB(object):
+    def __init__(self, config):
+        self.db = sqlite3.connect(config.dumpdir + '/malware.db')
+        self.cur = self.db.cursor()
+        self.cur.execute("""
+CREATE TABLE IF NOT EXISTS urls (
+    id INTEGER PRIMARY KEY,
+    url_hash VARCHAR(10) NOT NULL,
+    stamp DATETIME DEFAULT CURRENT_TIMESTAMP
+)""")
+        self.cur.execute("""
+CREATE TABLE IF NOT EXISTS files (
+    id INT PRIMARY KEY,
+    file_hash VARCHAR(10) NOT NULL,
+    stamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    url_id INTEGER
+)""")
+        self.commit()
 
-def load_urls(filename='urls.json'):
-    if os.path.exists(filename):
-        try:
-            with open(filename, 'rb') as urlfile:
-                urls = set(json.load(urlfile))
-            logging.info('Loaded urls from %s', filename)
-        except ValueError:  # this usually happens when the file is empty
-            urls = set()
-    else:
-        urls = set()
-    return urls
+    def commit(self):
+        self.db.commit()
 
+    def insert_url(self, url):
+        self.cur.execute("""
+INSERT INTO urls (url_hash) VALUES (?)
+        """, (url,))
 
-def save_urls(urls, filename='urls.json'):
-    logging.info('Dumping past URLs to %s', filename)
-    with open(filename, 'w') as urlfile:
-        json.dump(list(urls), urlfile, indent=2)
+    def insert_file(self, hash):
+        self.cur.execute("""
+INSERT INTO files (file_hash) VALUES (?)
+        """, (url,))
+
+    def exists_url(self, url):
+        self.cur.execute("""SELECT COUNT(id) FROM urls WHERE url_hash = ?""", (url,))
+        res = self.cur.fetchone()
+        if res:
+            return res[0]
+
+    def exists_file(self, hash):
+        self.cur.execute("""SELECT COUNT(id) FROM files WHERE file_hash = ?""", (hash,))
+        res = self.cur.fetchone()
+        if res:
+            return res[0]
 
 
 def main():
     resource.setrlimit(resource.RLIMIT_NOFILE, (2048, 2048))
-    hashes = set()
-    past_urls = set()
 
     args = setup_args(sys.argv[1:])
     if args.config:
@@ -523,8 +393,7 @@ def main():
         cfg = config(args, 'maltrieve.cfg')
     cfg.check_proxy()
 
-    hashes = load_hashes('hashes.json')
-    past_urls = load_urls('urls.json')
+    database = MalwareDB(cfg)
 
     print("Processing source URLs")
 
@@ -560,8 +429,9 @@ def main():
             moar_urls = list(f)
         malware_urls.update(moar_urls)
 
-    print("Downloading %d malware samples" % (len(malware_urls),))
-    malware_urls -= past_urls
+    malware_urls = [url for url in malware_urls if not database.exists_url(url)]
+
+    print("Downloading %d malware samples" % (len(malware_urls),))    
     reqs = [grequests.get(url, timeout=60, headers=headers, proxies=cfg.proxy)
 	    for url in malware_urls]
     for chunk in chunker(reqs, 5):
@@ -572,12 +442,11 @@ def main():
             if not each or each.status_code != 200:
                 continue
             if save_malware(each, cfg):
-                past_urls.add(each.url)
+                database.insert_url(each.url)
+        database.commit()
+
 
     print("Completed downloads")
-
-    save_urls(past_urls, 'urls.json')
-    save_hashes(hashes, 'hashes.json')
 
 
 if __name__ == "__main__":
