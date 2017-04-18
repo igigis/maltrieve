@@ -32,7 +32,7 @@ import resource
 import sys
 import tempfile
 from urlparse import urlparse
-
+from hashlib import sha1
 import sqlite3
 import feedparser
 import grequests
@@ -41,22 +41,10 @@ import requests
 from bs4 import BeautifulSoup
 
 
-"""
-TODO:
- * add malware sources
-   - http://malwaria.cf/
-   - https://malwared.malwaremustdie.org/rss_bin.php
-   - http://malwareurls.joxeankoret.com/normal.txt
-   - http://www.virussign.com/malwarelist.html
-   - http://labs.sucuri.net/?malware
-   - http://malc0de.com/database/
-   - https://zeustracker.abuse.ch/monitor.php?browse=binaries
-   - https://avcaesar.malware.lu/
-   - http://www.offensivecomputing.net/
-   - http://jsunpack.jeek.org/?list=1
-   - http://malwaredb.malekal.com/
-   - http://www.malwaredomainlist.com/mdl.php
-"""
+def hashstr(thestr):
+    hasher = sha1()
+    hasher.update(thestr)
+    return hasher.hexdigest()
 
 
 class config(object):
@@ -161,6 +149,7 @@ class config(object):
             logging.info('External sites see %s', my_ip)
             print('External sites see {ip}'.format(ip=my_ip))
 
+
 # This gives cuckoo the URL instead of the file.
 def upload_cuckoo(response, md5, cfg):
     if response:
@@ -176,6 +165,7 @@ def upload_cuckoo(response, md5, cfg):
             return False
         else:
             return True
+
 
 # This gives cuckoo the URL instead of the file.
 def upload_cuckoo_dist(response, md5, cfg):
@@ -193,7 +183,6 @@ def upload_cuckoo_dist(response, md5, cfg):
             return False
         else:
             return True
-
 
 
 def save_malware(response, cfg):
@@ -327,18 +316,7 @@ def setup_args(args):
     return parser.parse_args(args)
 
 
-def load_hashes(filename="hashes.json"):
-    if os.path.exists(filename):
-        with open(filename, 'rb') as hashfile:
-            hashes = set(json.load(hashfile))
-        logging.info('Loaded hashes from %s', filename)
-    else:
-        hashes = set()
-    return hashes
-
-
-
-class MalwareDB(object):
+class MaltriveDatabase(object):
     def __init__(self, config):
         self.db = sqlite3.connect(config.dumpdir + '/malware.db')
         self.cur = self.db.cursor()
@@ -361,9 +339,10 @@ CREATE TABLE IF NOT EXISTS files (
         self.db.commit()
 
     def insert_url(self, url):
+        url_hash = hashstr(url)
         self.cur.execute("""
 INSERT INTO urls (url_hash) VALUES (?)
-        """, (url,))
+        """, (url_hash,))
 
     def insert_file(self, hash):
         self.cur.execute("""
@@ -393,7 +372,7 @@ def main():
         cfg = config(args, 'maltrieve.cfg')
     cfg.check_proxy()
 
-    database = MalwareDB(cfg)
+    database = MaltriveDatabase(cfg)
 
     print("Processing source URLs")
 
