@@ -341,7 +341,7 @@ INSERT INTO urls (url_hash) VALUES (?)
         url_hash = hashstr(url)
         self.cur.execute("""SELECT COUNT(id) FROM urls WHERE url_hash = ?""", (url_hash,))
         res = self.cur.fetchone()
-        return res[0]
+        return int(res[0]) == 0
 
 
 def main():
