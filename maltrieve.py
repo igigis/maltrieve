@@ -326,13 +326,6 @@ CREATE TABLE IF NOT EXISTS urls (
     url_hash VARCHAR(10) NOT NULL,
     stamp DATETIME DEFAULT CURRENT_TIMESTAMP
 )""")
-        self.cur.execute("""
-CREATE TABLE IF NOT EXISTS files (
-    id INT PRIMARY KEY,
-    file_hash VARCHAR(10) NOT NULL,
-    stamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    url_id INTEGER
-)""")
         self.commit()
 
     def commit(self):
@@ -344,22 +337,11 @@ CREATE TABLE IF NOT EXISTS files (
 INSERT INTO urls (url_hash) VALUES (?)
         """, (url_hash,))
 
-    def insert_file(self, hash):
-        self.cur.execute("""
-INSERT INTO files (file_hash) VALUES (?)
-        """, (url,))
-
     def exists_url(self, url):
-        self.cur.execute("""SELECT COUNT(id) FROM urls WHERE url_hash = ?""", (url,))
+        url_hash = hashstr(url)
+        self.cur.execute("""SELECT COUNT(id) FROM urls WHERE url_hash = ?""", (url_hash,))
         res = self.cur.fetchone()
-        if res:
-            return res[0]
-
-    def exists_file(self, hash):
-        self.cur.execute("""SELECT COUNT(id) FROM files WHERE file_hash = ?""", (hash,))
-        res = self.cur.fetchone()
-        if res:
-            return res[0]
+        return res[0]
 
 
 def main():
@@ -423,8 +405,6 @@ def main():
             if save_malware(each, cfg):
                 database.insert_url(each.url)
         database.commit()
-
-
     print("Completed downloads")
 
 
