@@ -20,7 +20,7 @@ ENV HOME /home/maltrieve
 ENV USER maltrieve
 WORKDIR /archive
 ENTRYPOINT ["/home/maltrieve/maltrieve.py"]
-CMD ["-d", "/archive/samples", "-l", "/archive/maltrieve.log", "--config", "/home/maltrieve/maltrieve.cfg"]
+CMD ["-d", "/archive/"]
 
 USER root
 RUN apt-get update && \
