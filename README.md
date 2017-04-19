@@ -19,11 +19,12 @@ Maltrieve originated as a fork of [mwcrawler](https://github.com/ricardo-dias/mw
 * [Malware Domain List](http://www.malwaredomainlist.com/hostslist/mdl.xml)
 * [Malware URLs](http://malwareurls.joxeankoret.com/normal.txt)
 * [MalwareDB](http://malwaredb.malekal.com/)
-* [VX Vault](http://vxvault.siri-urz.net/URL_List.php)
+* [VX Vault](http://vxvault.net/ViriList.php)
 * [Malshare](http://www.malshare.com/index.php)
 * [URLquery](http://urlquery.net/)
 * [CleanMX](http://support.clean-mx.de/clean-mx/xmlviruses.php?)
 * [ZeusTracker](https://zeustracker.abuse.ch/monitor.php?urlfeed=binaries)
+* [Minotaur Analysis](http://minotauranalysis.com/)
 
 Other improvements include:
 
@@ -32,7 +33,7 @@ Other improvements include:
 * Logging of source URLs
 * Multiple user agent support
 * Better error handling
-* [VxCage](https://github.com/botherder/vxcage), [Viper](https://github.com/botherder/viper) and [Cuckoo Sandbox](http://www.cuckoosandbox.org) support
+* [Cuckoo Sandbox](http://www.cuckoosandbox.org) support
 
 
 ## Installation
@@ -55,27 +56,38 @@ __Basic execution:__ `maltrieve` (if installed normally) or ```python maltrieve.
 
 ### Options
 ```
-usage: maltrieve [-h] [-p PROXY] [-d DUMPDIR] [-l LOGFILE] [-x] [-v] [-c] [-s]
+usage: maltrieve.py [-h] [-q] [-v] [--debug] [-p PROXY] [-d DUMPDIR]
+                    [-i INPUTFILE] [-b BLACKLIST] [-w WHITELIST] [-P PRIORITY]
+                    [-c URL] [-U USERAGENT] [--malshare MALSHARE] [-t TIMEOUT]
+                    [-N CONCURRENCY] [-s]
 
 optional arguments:
   -h, --help            show this help message and exit
+  -q, --quiet           Don't print results to console
+  -v, --verbose         Log informational messages
+  --debug               Log debugging messages
   -p PROXY, --proxy PROXY
-                        Define HTTP proxy as address:port
+                        Define HTTP proxy, e.g. socks5://localhost:9050
   -d DUMPDIR, --dumpdir DUMPDIR
                         Define dump directory for retrieved files
-  -l LOGFILE, --logfile LOGFILE
-                        Define file for logging progress
-  -x, --vxcage          Dump the files to a VxCage instance
-  -v, --viper           Dump the files to a Viper instance
-  -r, --crits           Dump the file and domain to a CRITs instance
-  -c, --cuckoo          Enable Cuckoo analysis
+  -i INPUTFILE, --inputfile INPUTFILE
+                        Text file with URLs to retrieve
+  -b BLACKLIST, --blacklist BLACKLIST
+                        Comma separated mimetype blacklist
+  -w WHITELIST, --whitelist WHITELIST
+                        Comma separated mimetype whitelist
+  -P PRIORITY, --priority PRIORITY
+                        Cuckoo sample priority
+  -c URL, --cuckoo URL  Cuckoo API
+  -U USERAGENT, --useragent USERAGENT
+                        HTTP User agent
+  --malshare MALSHARE   Malshare key
+  -t TIMEOUT, --timeout TIMEOUT
+                        HTTP request/response timeout (default 20)
+  -N CONCURRENCY, --concurrency CONCURRENCY
+                        HTTP request/response concurrency (default 5)
   -s, --sort_mime       Sort files by MIME type
-
 ```
-
-### Configuration File
-
-Many of Maltrieve's command line options can be specified in ```maltrieve.cfg```.
 
 ## Automated Execution (Optional)
 

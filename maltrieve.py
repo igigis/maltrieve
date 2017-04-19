@@ -61,9 +61,9 @@ def check_proxy(opts):
 
 
 # This gives cuckoo the URL instead of the file.
-def upload_cuckoo(response, sample, cfg):
-    if response:
-        files = {'file': (sample.file_md5, response.content)}
+def upload_cuckoo(data, sample, cfg):
+    if data:
+        files = {'file': (sample.file_md5, data)}
         url = cfg.cuckoo + "/tasks/create/file"
         headers = {'User-agent': 'Maltrieve'}
         try:
@@ -108,6 +108,7 @@ def process_xml_list_desc(response, source):
 
     return urls
 
+
 def process_malwaredomainlist(response):
     return process_xml_list_desc(response, 'malwaredomainlist')
 
@@ -117,18 +118,18 @@ def process_zeustracker(response):
 def process_malc0de(response):
     return process_xml_list_desc(response, 'malc0de')
 
-
 def process_xml_list_title(response):
     feed = feedparser.parse(response)
     return [re.sub('&amp;', '&', entry.title) for entry in feed.entries]
 
-
 def process_vxvault(response):
     return process_simple_list(response, 'vxvault')
 
-    
 def process_malwareurls(response):
     return process_simple_list(response, 'malwareurls')
+
+def process_minotaur(response):
+    return process_simple_list(response, 'minotaur')
 
 
 def process_simple_list(response, source):
@@ -196,25 +197,27 @@ def setup_args(args):
                         const=logging.DEBUG, default=logging.WARNING,
                         help="Log debugging messages")
     parser.add_argument("-p", "--proxy",
-                        help="Define HTTP proxy as address:port")
+                        help="Define HTTP proxy, e.g. socks5://localhost:9050")
     parser.add_argument("-d", "--dumpdir", default="/tmp/maltrieve",
                         help="Define dump directory for retrieved files")
-    parser.add_argument("-i", "--inputfile", help="File of URLs to process")
+    parser.add_argument("-i", "--inputfile", nargs='*', help="Text file with URLs to retrieve")
     parser.add_argument("-b", "--blacklist", help="Comma separated mimetype blacklist")
     parser.add_argument("-w", "--whitelist", help="Comma separated mimetype whitelist")
     parser.add_argument("-P", "--priority",
                         help="Cuckoo sample priority", default=2)
-    parser.add_argument("-c", "--cuckoo", help="Enable Cuckoo analysis")
+    parser.add_argument("-c", "--cuckoo", metavar='URL', help="Cuckoo API")
     parser.add_argument('-U', '--useragent', help='HTTP User agent', default="Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 7.1; Trident/5.0)")
     parser.add_argument("--malshare",
                         help="Malshare key", default=None)
     parser.add_argument("-t", "--timeout", type=int, default=20,
-                        help="HTTP request/response timeout")
+                        help="HTTP request/response timeout (default 20)")
     parser.add_argument("-N", "--concurrency", type=int, default=5,
-                        help="HTTP request/response concurrency")
+                        help="HTTP request/response concurrency (default 5)")
     parser.add_argument("-s", "--sort_mime",
                         help="Sort files by MIME type", action="store_true", default=False)
-
+    parser.add_argument("-L", "--local",
+                        help="Don't search external sources", action="store_true", default=False)
+    parser.add_argument("-z", "--zip", metavar="FILE", nargs='*')
     return parser.parse_args(args)
 
 
@@ -253,26 +256,32 @@ class MaltriveDatabase(object):
 CREATE TABLE IF NOT EXISTS entries (
     id INTEGER PRIMARY KEY,
     source VARCHAR(128) NOT NULL,
+    mime_type VARCHAR(64) NOT NULL,
     url VARCHAR(512) NOT NULL,
     url_sha1 VARCHAR(10) NOT NULL,
     file_sha256 VARCHAR(10) NOT NULL,
     file_sha1 VARCHAR(10) NOT NULL,
     file_md5 VARCHAR(10) NOT NULL,
-    stamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    stamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )""")
         self.commit()
 
     def commit(self):
         self.db.commit()
 
+    def only_unknown(self, sample_list):
+        return [sample for sample in sample_list
+                if not self.exists(sample)]
+
     def insert(self, sample):
         keys = ','.join([key for key in sample.__dict__.keys()])
         placeholders = ','.join(['?' for _ in sample.__dict__.keys()])
         values = sample.__dict__.values()
-        self.cur.execute("INSERT INTO entries (%s) VALUES (%s)" % (keys, placeholders), values)
+        self.cur.execute("INSERT INTO entries (%s) VALUES (%s)" % (
+            keys, placeholders), values)
 
     def exists(self, sample):
-        ignore_keys = ['source']
+        ignore_keys = ('source', 'mime_type')
         wheres = ' OR '.join([
             "%s = ?" % (key,)
             for key in sample.__dict__.keys()
@@ -292,30 +301,28 @@ class Maltrieve(object):
         check_options(self.opts)
         self.database = MaltriveDatabase(self.opts)
 
-    def save_malware(self, sample, response):
-        url = sample.url
-        data = response.content
-        mime_type = magic.from_buffer(data, mime=True)
-        logging.info("Saving malware: %s (%s)", url, mime_type)
+    def save_malware(self, sample, data):
+        if 'mime_type' not in sample:
+            sample.mime_type = magic.from_buffer(data, mime=True)
+        logging.info("Saving malware: %s (%s)", sample.url, sample.mime_type)
 
-        if mime_type in self.opts.blacklist:
-            logging.info('%s in ignore list for %s', mime_type, url)
+        if sample.mime_type in self.opts.blacklist:
+            logging.info('%s in ignore list for %s', sample.mime_type, sample.url)
             return None
         if self.opts.whitelist:
-            if mime_type in self.opts.whitelist:
+            if sample.mime_type in self.opts.whitelist:
                 pass
             else:
-                logging.info('%s not in whitelist for %s', mime_type, url)
+                logging.info('%s not in whitelist for %s', sample.mime_type, sample.url)
                 return None
 
-        if 'url_sha1' not in sample:
+        if not getattr(sample, 'url_sha1', None):
             sample.url_sha1 = hashstr(sample.url, hashlib.sha1)
-
-        if 'file_md5' not in sample:
+        if not getattr(sample, 'file_md5', None):
             sample.file_md5 = hashstr(data, hashlib.md5)
-        if 'file_sha1' not in sample:
+        if not getattr(sample, 'file_sha1', None):
             sample.file_sha1 = hashstr(data, hashlib.sha1)
-        if 'file_sha256' not in sample:
+        if not getattr(sample, 'file_sha256', None):
             sample.file_sha256 = hashstr(data, hashlib.sha256)
 
         if self.database.exists(sample):
@@ -325,12 +332,12 @@ class Maltrieve(object):
         # Assume that external repo means we don't need to write to file as well.
         stored = False
         if self.opts.cuckoo:
-            stored = upload_cuckoo(response, sample, self.opts) or stored
+            stored = upload_cuckoo(data, sample, self.opts) or stored
         # else save to disk
         if not stored:
             if self.opts.sort_mime:
                 # set folder per mime_type
-                sort_folder = mime_type.replace('/', '_')
+                sort_folder = sample.mime_type.replace('/', '_')
                 if not os.path.exists(os.path.join(self.opts.dumpdir, sort_folder)):
                     os.makedirs(os.path.join(self.opts.dumpdir, sort_folder))
                 store_path = os.path.join(self.opts.dumpdir, sort_folder, sample.file_md5)
@@ -339,20 +346,22 @@ class Maltrieve(object):
             with open(store_path, 'wb') as handle:
                 handle.write(data)
                 logging.info("Saved %s to dump dir", sample.file_md5)
+
         self.database.insert(sample)
         return sample
 
-    def find_samples(self):
-         # TODO: Replace with plugins
+    def _find_remote(self):
         source_urls = {
             'http://malc0de.com/rss/': process_malc0de,
             'https://zeustracker.abuse.ch/monitor.php?urlfeed=binaries': process_zeustracker,
             'http://www.malwaredomainlist.com/hostslist/mdl.xml': process_malwaredomainlist,
             'http://vxvault.net/URL_List.php': process_vxvault,
-            'http://urlquery.net/': process_urlquery,
+            'http://urlquery.net/search.php?q=%25&max=50': process_urlquery,
             'http://malwareurls.joxeankoret.com/normal.txt': process_malwareurls,
-            'http://malwaredb.malekal.com/': process_malwaredb
+            'http://malwaredb.malekal.com/': process_malwaredb,
+            'http://minotauranalysis.com/raw/urls': process_minotaur,
 
+            # XXX: disabled - requires registration of user agent
             #'http://support.clean-mx.de/clean-mx/rss?scope=viruses&limit=0%2C64': process_xml_list_title,
         }
         if self.opts.malshare:
@@ -360,7 +369,7 @@ class Maltrieve(object):
 
         logging.info("Retrieving URLs from %d sources", len(source_urls))
         headers = {'User-Agent': 'Maltrieve'}
-        reqs = [grequests.get(url, timeout=60, headers=headers, proxies=self.opts.proxy)
+        reqs = [grequests.get(url, timeout=self.opts.timeout, headers=headers, proxies=self.opts.proxy)
                 for url in source_urls]
         source_lists = grequests.map(reqs)
         
@@ -368,27 +377,49 @@ class Maltrieve(object):
         for response in source_lists:
             if hasattr(response, 'status_code') and response.status_code == 200:            
                 found_urls = source_urls[response.url](response.text)
+                if not len(found_urls):
+                    logging.warning('Source found no samples at url: %r', response.url)
+                else:
+                    logging.info("Found %d samples at url: %r", len(found_urls), response.url)
                 sample_list.extend(found_urls)
+        return sample_list
 
+    def _find_local(self):
+        sample_list = list()
         if self.opts.inputfile:
-            with open(self.opts.inputfile, 'rb') as handle:
-                sample_list.extend(process_simple_list(handle.read()))
+            for inputfile in self.opts.inputfile:
+                with open(inputfile, 'rb') as handle:
+                    found_samples = process_simple_list(handle.read())
+                    if not len(found_samples):
+                        logging.warning("Found no samples in local file %r", inputfile)
+                    else:
+                        logging.info("Found %d samples in local file %r", len(found_samples), inputfile)
+                        sample_list.extend(found_samples)
+        return sample_list
 
-        logging.info("Found %d URLs for malware samples", len(sample_list))
+    def find_samples(self):
+        sample_list = list()
+        if not self.opts.local:
+            sample_list.extend(self._find_remote())
+        sample_list.extend(self._find_local())
         random.shuffle(sample_list)
-        return sample_list    
+        return sample_list
 
     def download_sample(self, sample):
         headers = {'User-Agent': self.opts.useragent}
         try:            
-            resp = requests.get(sample.url, headers=headers, proxies=self.opts.proxy, timeout=20)
+            resp = requests.get(sample.url, headers=headers, proxies=self.opts.proxy, timeout=self.opts.timeout)
             if resp.status_code != 200:
                 return None
         except Exception:
             return None
-        return self.save_malware(sample, resp)
+        return self.save_malware(sample, resp.content)
 
     def download_samples(self, sample_list):
+        len_before = len(sample_list)
+        sample_list = self.database.only_unknown(sample_list)
+        logging.info("Downloading %d malware samples (%d duplicates)",
+                     len(sample_list), len_before - len(sample_list))
         pool = gevent.pool.Pool(self.opts.concurrency)
         for idx, sample in enumerate(sample_list):
             pool.add(gevent.spawn(self.download_sample, sample))
@@ -403,9 +434,13 @@ def main():
     maltrieve = Maltrieve(sys.argv[1:])
     try:
         sample_list = maltrieve.find_samples()
+        if not len(sample_list):
+            logging.error('No samples to download - exiting')
+            return 100
         maltrieve.download_samples(sample_list)
-    except KeyboardInterrupt:
-        maltrieve.database.commit()        
+    finally:
+        maltrieve.database.commit()
+    return 0
 
 
 if __name__ == "__main__":
