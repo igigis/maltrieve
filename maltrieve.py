@@ -72,7 +72,7 @@ def upload_cuckoo(data, sample, cfg):
         url = cfg.cuckoo + "/tasks/create/file"
         data = dict(
             priority=cfg.priority,
-            custom=json.dumps(source=sample.source),
+            custom=json.dumps(dict(source=sample.source)),
         )
         headers = {'User-agent': 'Maltrieve'}
         try:
