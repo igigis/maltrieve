@@ -70,9 +70,13 @@ def upload_cuckoo(data, sample, cfg):
     if data:
         files = {'file': (sample.file_md5, data)}
         url = cfg.cuckoo + "/tasks/create/file"
+        data = dict(
+            priority=cfg.priority,
+            custom=json.dumps(source=sample.source),
+        )
         headers = {'User-agent': 'Maltrieve'}
         try:
-            response = requests.post(url, headers=headers, files=files)
+            response = requests.post(url, data=data, headers=headers, files=files)
             try:
                 response_data = response.json()
             except ValueError:
