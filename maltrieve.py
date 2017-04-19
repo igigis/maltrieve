@@ -150,6 +150,17 @@ def process_simple_list(response, source):
     return results
 
 
+def process_dasmalwerk(response):
+    response = json.loads(response)
+    return [
+        Namespace(
+            url="http://dasmalwerk.eu/zippedMalware/" + item['Filename'] + ".zip",
+            source='dasmalwerk')
+        for item in response['items']
+        if 'Filename' in item
+    ]
+
+
 def process_urlquery(response):
     soup = BeautifulSoup(response, "html.parser")
     urls = list()
@@ -387,6 +398,7 @@ class Maltrieve(object):
 
     def _find_remote(self):
         source_urls = {
+            "http://dasmalwerk.eu/api/": process_dasmalwerk,
             'http://malc0de.com/rss/': process_malc0de,
             'https://zeustracker.abuse.ch/monitor.php?urlfeed=binaries': process_zeustracker,
             'http://www.malwaredomainlist.com/hostslist/mdl.xml': process_malwaredomainlist,

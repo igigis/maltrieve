@@ -25,6 +25,7 @@ Maltrieve originated as a fork of [mwcrawler](https://github.com/ricardo-dias/mw
 * [CleanMX](http://support.clean-mx.de/clean-mx/xmlviruses.php?)
 * [ZeusTracker](https://zeustracker.abuse.ch/monitor.php?urlfeed=binaries)
 * [Minotaur Analysis](http://minotauranalysis.com/)
+* [DAS MALWERK](http://dasmalwerk.eu)
 
 Other improvements include:
 
