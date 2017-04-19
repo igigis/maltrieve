@@ -35,6 +35,11 @@ import re
 import resource
 import sys
 import tempfile
+try:
+    from czipfile import ZipFile
+except ImportError:
+    logging.warning("Using slow Python standard zipfile")
+    from zipfile import ZipFile
 
 import gevent.pool
 import grequests
@@ -273,26 +278,58 @@ CREATE TABLE IF NOT EXISTS entries (
         return [sample for sample in sample_list
                 if not self.exists(sample)]
 
+    def normalise(self, sample):
+        if not getattr(sample, 'url_sha1', None):
+            sample.url_sha1 = hashstr(sample.url, hashlib.sha1)
+
     def insert(self, sample):
-        keys = ','.join([key for key in sample.__dict__.keys()])
-        placeholders = ','.join(['?' for _ in sample.__dict__.keys()])
-        values = sample.__dict__.values()
-        self.cur.execute("INSERT INTO entries (%s) VALUES (%s)" % (
-            keys, placeholders), values)
+        self.normalise(sample)
+        pairs = [(key, value) for key, value in sample.__dict__.items()
+                 if key[0] != '_']
+        keys = ','.join([x[0] for x in pairs])
+        placeholders = ','.join(['?' for _ in pairs])
+        values = [x[1] for x in pairs]
+        sql = "INSERT INTO entries (%s) VALUES (%s)" % (keys, placeholders)
+        self.cur.execute(sql, values)
 
     def exists(self, sample):
-        ignore_keys = ('source', 'mime_type')
+        self.normalise(sample)
+        search_keys = ('url_sha1', 'file_sha1', 'file_md5')
         wheres = ' OR '.join([
             "%s = ?" % (key,)
             for key in sample.__dict__.keys()
-            if key not in ignore_keys
-        ])        
+            if key in search_keys
+        ])
+        if not len(wheres):
+            raise RuntimeError("No searchable fields in sample:", sample)
+
         sql = "SELECT COUNT(id) FROM entries WHERE " + wheres
         values = [value for key, value in sample.__dict__.items()
-                  if key not in ignore_keys]
+                  if key in search_keys]
         self.cur.execute(sql, values)
         res = self.cur.fetchone()
         return int(res[0]) > 0
+
+
+def zip_tryopen(handle, filename):
+    passwords = [None, 'infected', 'malware']
+    last_error = None
+    while len(passwords):
+        pwd = passwords[0]
+        try:
+            entry = handle.open(filename, pwd=pwd)
+        except RuntimeError as ex:
+            last_error = ex
+        else:
+            last_error = None
+            if pwd is not None:
+                handle.setpassword(pwd)
+            break
+        passwords = passwords[1:]
+    if last_error:
+        raise ex
+    assert entry is not None
+    return entry
 
 
 class Maltrieve(object):
@@ -316,8 +353,6 @@ class Maltrieve(object):
                 logging.info('%s not in whitelist for %s', sample.mime_type, sample.url)
                 return None
 
-        if not getattr(sample, 'url_sha1', None):
-            sample.url_sha1 = hashstr(sample.url, hashlib.sha1)
         if not getattr(sample, 'file_md5', None):
             sample.file_md5 = hashstr(data, hashlib.md5)
         if not getattr(sample, 'file_sha1', None):
@@ -385,7 +420,12 @@ class Maltrieve(object):
         return sample_list
 
     def _find_local(self):
+        """
+        Use local sources, e.g. input files of URLs and zip files, to import
+        malware samples.
+        """
         sample_list = list()
+
         if self.opts.inputfile:
             for inputfile in self.opts.inputfile:
                 with open(inputfile, 'rb') as handle:
@@ -395,34 +435,64 @@ class Maltrieve(object):
                     else:
                         logging.info("Found %d samples in local file %r", len(found_samples), inputfile)
                         sample_list.extend(found_samples)
+
+        if self.opts.zip:
+            for zip_filename in self.opts.zip:
+                handle = ZipFile(zip_filename, 'r')
+                found_samples = list()
+                for entry in handle.infolist():
+                    url = '://'.join([os.path.basename(zip_filename), entry.filename])
+                    found_samples.append(
+                        Namespace(url=url,
+                                  url_sha1=hashstr(url, hashlib.sha1),
+                                  _zip_handle=handle,
+                                  _zip_filename=entry.filename,
+                                  _read=lambda x: zip_tryopen(x._zip_handle, x._zip_filename).read(),
+                                  source='zip'))
+                if not len(found_samples):
+                    logging.warning("Found no samples in local zip file %r", zip_filename)
+                else:
+                    logging.info("Found %d samples in local file %r", len(found_samples), zip_filename)
+                    sample_list.extend(found_samples)
+
         return sample_list
 
     def find_samples(self):
         sample_list = list()
+        sample_list.extend(self._find_local())
         if not self.opts.local:
             sample_list.extend(self._find_remote())
-        sample_list.extend(self._find_local())
-        random.shuffle(sample_list)
         return sample_list
 
-    def download_sample(self, sample):
-        headers = {'User-Agent': self.opts.useragent}
-        try:            
-            resp = requests.get(sample.url, headers=headers, proxies=self.opts.proxy, timeout=self.opts.timeout)
-            if resp.status_code != 200:
+    def import_sample(self, sample):
+        logging.info("Importing sample: %r", sample.url)
+        readfn = getattr(sample, '_read', None)
+        if readfn:
+            assert callable(readfn)
+            data = readfn(sample)
+        else:
+            headers = {'User-Agent': self.opts.useragent}
+            try:
+                resp = requests.get(sample.url, headers=headers,
+                                    proxies=self.opts.proxy,
+                                    timeout=self.opts.timeout)
+                if resp.status_code != 200:
+                    return None
+                data = resp.content
+            except Exception:
                 return None
-        except Exception:
-            return None
-        return self.save_malware(sample, resp.content)
+        if data:
+            return self.save_malware(sample, data)
 
-    def download_samples(self, sample_list):
+    def import_samples(self, sample_list):
+        # Filter out known/duplicate samples
         len_before = len(sample_list)
         sample_list = self.database.only_unknown(sample_list)
-        logging.info("Downloading %d malware samples (%d duplicates)",
+        logging.info("Importing %d malware samples (%d duplicates)",
                      len(sample_list), len_before - len(sample_list))
         pool = gevent.pool.Pool(self.opts.concurrency)
         for idx, sample in enumerate(sample_list):
-            pool.add(gevent.spawn(self.download_sample, sample))
+            pool.add(gevent.spawn(self.import_sample, sample))
             if idx % 10 == 0:
                 self.database.commit()
         pool.join()
@@ -437,7 +507,7 @@ def main():
         if not len(sample_list):
             logging.error('No samples to download - exiting')
             return 100
-        maltrieve.download_samples(sample_list)
+        maltrieve.import_samples(sample_list)
     finally:
         maltrieve.database.commit()
     return 0

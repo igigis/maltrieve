@@ -15,3 +15,4 @@ pytest-cov
 coveralls
 LinkChecker
 markdown
+czipfile
