@@ -218,7 +218,7 @@ def setup_args(args):
                         help="Log debugging messages")
     parser.add_argument("-p", "--proxy",
                         help="Define HTTP proxy, e.g. socks5://localhost:9050")
-    parser.add_argument("-d", "--dumpdir", default="/tmp/maltrieve",
+    parser.add_argument("-d", "--dumpdir", default=os.path.join(os.getcwd(), "archive"),
                         help="Define dump directory for retrieved files")
     parser.add_argument("-i", "--inputfile", nargs='*', help="Text file with URLs to retrieve")
     parser.add_argument("-b", "--blacklist", help="Comma separated mimetype blacklist")
@@ -407,7 +407,7 @@ class Maltrieve(object):
             'https://zeustracker.abuse.ch/monitor.php?urlfeed=binaries': process_zeustracker,
             'http://www.malwaredomainlist.com/hostslist/mdl.xml': process_malwaredomainlist,
             'http://vxvault.net/URL_List.php': process_vxvault,
-            'http://urlquery.net/search.php?q=%25&max=50': process_urlquery,
+            'http://urlquery.net/': process_urlquery,
             'http://malwareurls.joxeankoret.com/normal.txt': process_malwareurls,
             'http://malwaredb.malekal.com/': process_malwaredb,
             'http://minotauranalysis.com/raw/urls': process_minotaur,
@@ -419,7 +419,7 @@ class Maltrieve(object):
             source_urls['http://www.malshare.com/daily/malshare.current.txt'] = lambda x: process_malshare(x, self.opts)
 
         logging.info("Retrieving URLs from %d sources", len(source_urls))
-        headers = {'User-Agent': 'Maltrieve'}
+        headers = {'User-Agent': 'github.com/HarryR/maltrieve'}
         reqs = [grequests.get(url, timeout=self.opts.timeout, headers=headers, proxies=self.opts.proxy)
                 for url in source_urls]
         source_lists = grequests.map(reqs)
