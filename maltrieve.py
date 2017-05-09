@@ -72,7 +72,7 @@ def upload_cuckoo(data, sample, cfg):
         url = cfg.cuckoo + "/tasks/create/file"
         data = dict(
             priority=cfg.priority,
-            custom=json.dumps(dict(source=sample.source)),
+            custom=json.dumps(sample.__dict__),
         )
         headers = {'User-agent': 'Maltrieve'}
         try:
@@ -168,12 +168,40 @@ def process_dasmalwerk(response):
 def process_urlquery(response):
     soup = BeautifulSoup(response, "html.parser")
     urls = list()
-    for t in soup.find_all("table", class_="test"):
-        for a in t.find_all("a"):
+    first = True
+    for table in soup.find_all("table"):
+        headers = [X.text for X in table.find_all('th')]
+        if not len(headers) or len(headers) < 4:
+            continue
+        if headers[1] != 'UQ / IDS / BL':
+            continue
+        for row in table.find_all("tr"):
+            if first:  #  Skip first row, it's the header
+                first = False
+                continue
+            cols = row.find_all('td')
+            urlquery_id = None
+            links = row.find_all('a')
+            if len(links):
+                href = links[0].get('href')
+                if 'report.php' in href:
+                    urlquery_id = int(href.split('=')[1])
+            if not urlquery_id:
+                continue
+            cols_text = [X.text for X in cols]
+            detection_stats = map(int, cols_text[1].split('-'))
+            if not any(detection_stats):
+                continue
             urls.append(
                 Namespace(
                     source='urlquery',
-                    url='http://' + re.sub('&amp;', '&', a.text)))
+                    urlquery=dict(
+                        id=urlquery_id,
+                        seen=cols_text[0],
+                        stat=detection_stats,
+                        ip=cols_text[3],
+                    ),
+                    url='http://' + re.sub('&amp;', '&', cols_text[2])))
     return urls
 
 
@@ -402,15 +430,15 @@ class Maltrieve(object):
 
     def _find_remote(self):
         source_urls = {
+            'http://urlquery.net/': process_urlquery,
             "http://dasmalwerk.eu/api/": process_dasmalwerk,
             'http://malc0de.com/rss/': process_malc0de,
             'https://zeustracker.abuse.ch/monitor.php?urlfeed=binaries': process_zeustracker,
             'http://www.malwaredomainlist.com/hostslist/mdl.xml': process_malwaredomainlist,
             'http://vxvault.net/URL_List.php': process_vxvault,
-            'http://urlquery.net/': process_urlquery,
             'http://malwareurls.joxeankoret.com/normal.txt': process_malwareurls,
-            'http://malwaredb.malekal.com/': process_malwaredb,
             'http://minotauranalysis.com/raw/urls': process_minotaur,
+            'http://malwaredb.malekal.com/': process_malwaredb,
 
             # XXX: disabled - requires registration of user agent
             #'http://support.clean-mx.de/clean-mx/rss?scope=viruses&limit=0%2C64': process_xml_list_title,
