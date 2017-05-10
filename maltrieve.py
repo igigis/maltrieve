@@ -100,9 +100,29 @@ def process_xml_list_desc(response, source):
             if "status: offline" in desc:
                 continue
             try:
-                file_md5 = re.search(r'MD5( hash)?: ([a-f0-9]{32})', desc).group(2)
+                file_md5 = re.search(r'MD5(\s+hash)?:\s*([a-f0-9]{32})', desc).group(2)
             except AttributeError:
                 file_md5 = None
+
+            origin = dict()
+            try:
+                origin['cc'] = re.search(r'Country:\s*([A-Z]{2})[,$\s]', desc).group(1)
+            except AttributeError:
+                pass
+            try:
+                origin['ip'] = re.search(r'IP [aA]ddress:\s*([^,$\s]+)[,$\s]', desc).group(1)
+            except AttributeError:
+                pass
+            try:
+                origin['asn'] = re.search(r'ASN:\s*([0-9]+)[,$\s]', desc).group(1)
+            except AttributeError:
+                pass
+
+            try:
+                description = re.search(r'Description:\s*([^$]+)', desc).group(1)
+            except AttributeError:
+                description = None
+
             url = desc.split(' ')[1].rstrip(',')
             if url == '':
                 continue
@@ -111,7 +131,13 @@ def process_xml_list_desc(response, source):
             url = re.sub('&amp;', '&', url)
             if not re.match('http', url):
                 url = 'http://' + url
-            urls.append(Namespace(url=url, source=source, file_md5=file_md5))
+            urls.append(Namespace(
+                url=url,
+                description=description,
+                source=source,
+                file_md5=file_md5,
+                origin=origin,
+            ))
         except Exception:
             logging.exception("Error parsing %s description: %s", source, desc)
 
@@ -159,7 +185,10 @@ def process_dasmalwerk(response):
     return [
         Namespace(
             url="http://dasmalwerk.eu/zippedMalware/" + item['Filename'] + ".zip",
-            source='dasmalwerk')
+            source='dasmalwerk',
+            origin=dict(
+                seen=item['Detectiondate'],
+            ))
         for item in response['items']
         if 'Filename' in item
     ]
@@ -183,12 +212,30 @@ def process_urlquery(response):
             urlquery_id = None
             links = row.find_all('a')
             if len(links):
-                href = links[0].get('href')
-                if 'report.php' in href:
-                    urlquery_id = int(href.split('=')[1])
+                try:
+                    href = links[0].get('href')
+                    if 'report.php' in href:
+                        urlquery_id = int(href.split('=')[1])
+                except ValueError:
+                    continue
             if not urlquery_id:
                 continue
+
             cols_text = [X.text for X in cols]
+            origin = dict(
+                seen=cols_text[0],
+                ip=cols_text[3],
+            )
+
+            try:
+                flag_src = cols[3].find_all('img')[0].get('src')
+                if 'images/flags/' in flag_src:
+                    origin_cc = flag_src.split('.')[0].split('/')[-1]
+                    if origin_cc.isalpha() and len(origin_cc) == 2:
+                        origin['cc'] = origin_cc.upper()
+            except Exception:
+                pass
+
             detection_stats = map(int, cols_text[1].split('-'))
             if not any(detection_stats):
                 continue
@@ -197,10 +244,9 @@ def process_urlquery(response):
                     source='urlquery',
                     urlquery=dict(
                         id=urlquery_id,
-                        seen=cols_text[0],
                         stat=detection_stats,
-                        ip=cols_text[3],
                     ),
+                    origin=origin,
                     url='http://' + re.sub('&amp;', '&', cols_text[2])))
     return urls
 
@@ -241,6 +287,7 @@ def setup_args(args):
     parser.add_argument('-v', '--verbose', action='store_const',
                         dest="loglevel", const=logging.INFO,
                         help="Log informational messages")
+    parser.add_argument('--test', action='store_true', help="Test sources")
     parser.add_argument('--debug', action='store_const', dest="loglevel",
                         const=logging.DEBUG, default=logging.WARNING,
                         help="Log debugging messages")
@@ -551,6 +598,10 @@ def main():
         if not len(sample_list):
             logging.error('No samples to download - exiting')
             return 100
+        if maltrieve.opts.test:
+            for sample in sample_list:
+                print(sample)
+            return 1
         maltrieve.import_samples(sample_list)
     finally:
         maltrieve.database.commit()
