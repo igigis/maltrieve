@@ -10,10 +10,10 @@
 #
 # To run this image after installing Docker, use a command like this:
 #
-# sudo docker run --rm -it harryr/maltrieve
+# sudo docker run --rm -it gigis/maltrieve
 
 FROM ubuntu:16.04
-MAINTAINER Harry Roberts <maltrieve@midnight-labs.org.org>
+MAINTAINER Ignatius Gigis
 
 USER maltrieve
 ENV HOME /home/maltrieve
