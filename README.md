@@ -22,10 +22,6 @@ Maltrieve originated as a fork of [mwcrawler](https://github.com/ricardo-dias/mw
 * [VX Vault](http://vxvault.net/ViriList.php)
 * [Malshare](http://www.malshare.com/index.php)
 * [URLquery](http://urlquery.net/)
-* [CleanMX](http://support.clean-mx.de/clean-mx/xmlviruses.php?)
-* [ZeusTracker](https://zeustracker.abuse.ch/monitor.php?urlfeed=binaries)
-* [Minotaur Analysis](http://minotauranalysis.com/)
-* [DAS MALWERK](http://dasmalwerk.eu)
 
 Other improvements include:
 
@@ -112,6 +108,9 @@ If downloaded to a folder and executed, add the following to the end of the file
 
 Red Hat systems will need to ensure that the user is added to the `/etc/cron.allow` file.
 
+## Malshare API Key
+
+For the Malshare daily dataset, register for an API key at https://malshare.com/. Modify the maltrieve.cfg file with your registered Malshare API key.
 
 ## Other Tools
 
@@ -124,7 +123,6 @@ Released under GPL version 3. See the [LICENSE](./LICENSE) file for full details
 ## Known bugs
 
 We list all the bugs we know about (plus some things we know we need to add) at the [GitHub issues](https://github.com/krmaxwell/maltrieve/issues) page.
-
 
 ## How you can help
 
