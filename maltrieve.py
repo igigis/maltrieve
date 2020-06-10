@@ -20,69 +20,288 @@
 
 from __future__ import print_function
 
-from gevent import monkey
-monkey.patch_all()
-
-from argparse import Namespace, ArgumentParser
+import argparse
 import ConfigParser
 import datetime
 import hashlib
 import json
 import logging
 import os
-import random
 import re
 import resource
 import sys
 import tempfile
-try:
-    from czipfile import ZipFile
-except ImportError:
-    logging.warning("Using slow Python standard zipfile")
-    from zipfile import ZipFile
-
-import gevent.pool
-import grequests
 from urlparse import urlparse
-import sqlite3
+
 import feedparser
+import grequests
 import magic
 import requests
 from bs4 import BeautifulSoup
 
 
-def hashstr(thestr, hashfn=hashlib.sha1):
-    hasher = hashfn()
-    hasher.update(str(thestr))
-    return hasher.hexdigest()
+class config(object):
+
+    """ Class for holding global configuration setup """
+
+    def __init__(self, args, filename='maltrieve.cfg'):
+        self.configp = ConfigParser.ConfigParser(os.environ)
+        self.configp.read(filename)
+
+        if args.logfile or self.configp.get('Maltrieve', 'logfile'):
+            if args.logfile:
+                self.logfile = args.logfile
+            else:
+                self.logfile = self.configp.get('Maltrieve', 'logfile')
+            logging.basicConfig(filename=self.logfile, level=logging.DEBUG,
+                                format='%(asctime)s %(thread)d %(message)s',
+                                datefmt='%Y-%m-%d %H:%M:%S')
+        else:
+            logging.basicConfig(level=logging.DEBUG,
+                                format='%(asctime)s %(thread)d %(message)s',
+                                datefmt='%Y-%m-%d %H:%M:%S')
+        if args.proxy:
+            self.proxy = {'http': args.proxy}
+        elif self.configp.has_option('Maltrieve', 'proxy'):
+            self.proxy = {'http': self.configp.get('Maltrieve', 'proxy')}
+        else:
+            self.proxy = None
+
+        if self.configp.has_option('Maltrieve', 'User-Agent'):
+            self.useragent = self.configp.get('Maltrieve', 'User-Agent')
+        else:
+            # Default to IE 9
+            self.useragent = "Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 7.1; Trident/5.0)"
+
+        self.sort_mime = args.sort_mime
+
+        if self.configp.has_option('Maltrieve', 'black_list'):
+            self.black_list = self.configp.get('Maltrieve', 'black_list').strip().split(',')
+        else:
+            self.black_list = []
+
+        if self.configp.has_option('Maltrieve', 'white_list'):
+            self.white_list = self.configp.get('Maltrieve', 'white_list').strip().split(',')
+        else:
+            self.white_list = False
+
+        if args.inputfile:
+            self.inputfile = args.inputfile
+        else:
+            self.inputfile = None
+
+        # make sure we can open the directory for writing
+        if args.dumpdir:
+            self.dumpdir = args.dumpdir
+        elif self.configp.get('Maltrieve', 'dumpdir'):
+            self.dumpdir = self.configp.get('Maltrieve', 'dumpdir')
+        else:
+            self.dumpdir = '/tmp/malware'
+
+        # Create the dir
+        if not os.path.exists(self.dumpdir):
+            try:
+                os.makedirs(self.dumpdir)
+            except OSError:
+                logging.error('Could not create %s, using default', self.dumpdir)
+                self.dumpdir = '/tmp/malware'
+
+        try:
+            fd, temp_path = tempfile.mkstemp(dir=self.dumpdir)
+        except OSError:
+            logging.error('Could not open %s for writing, using default', self.dumpdir)
+            self.dumpdir = '/tmp/malware'
+        else:
+            os.close(fd)
+            os.remove(temp_path)
+
+        logging.info('Using %s as dump directory', self.dumpdir)
+        self.logheaders = self.configp.get('Maltrieve', 'logheaders')
+
+        # TODO: Merge these
+        self.vxcage = args.vxcage or self.configp.has_option('Maltrieve', 'vxcage')
+        self.cuckoo = args.cuckoo or self.configp.has_option('Maltrieve', 'cuckoo')
+
+	self.priority = args.priority
+	if not self.priority and self.configp.has_option('Maltrieve', 'priority'):
+		self.priority = self.configp.get('Maltrieve', 'priority')
+
+        self.cuckoo_dist = args.cuckoo_dist
+        if not self.cuckoo_dist and self.configp.has_option('Maltrieve', 'cuckoo_dist'):
+            self.cuckoo_dist = self.configp.get('Maltrieve', 'cuckoo_dist')
+
+        self.viper = args.viper or self.configp.has_option('Maltrieve', 'viper')
+
+        self.malshare_key = args.malshare_key
+        if not self.malshare_key and self.configp.has_option('Maltrieve', 'malshare_key'):
+            self.malshare_key = self.configp.get('Maltrieve', 'malshare_key')
+
+        # CRITs
+        if args.crits or self.configp.has_option('Maltrieve', 'crits'):
+            self.crits = self.configp.get('Maltrieve', 'crits')
+            self.crits_user = self.configp.get('Maltrieve', 'crits_user')
+            self.crits_key = self.configp.get('Maltrieve', 'crits_key')
+            self.crits_source = self.configp.get('Maltrieve', 'crits_source')
+        else:
+            self.crits = False
+
+    def check_proxy(self):
+        if self.proxy:
+            logging.info('Using proxy %s', self.proxy)
+            my_ip = requests.get('http://ipinfo.io/ip', proxies=self.proxy).text
+            logging.info('External sites see %s', my_ip)
+            print('External sites see {ip}'.format(ip=my_ip))
 
 
-def check_proxy(opts):
-    if opts.proxy:
-        logging.info('Using proxy %s', opts.proxy)
-        my_ip = requests.get('http://ipinfo.io/ip', proxies=opts.proxy).text
-        logging.info('External sites see %s', my_ip)
-        print('External sites see {ip}'.format(ip=my_ip))
+def upload_crits(response, md5, cfg):
+    if response:
+        url_tag = urlparse(response.url)
+        mime_type = magic.from_buffer(response.content, mime=True)
+        files = {'filedata': (md5, response.content)}
+        headers = {'User-agent': 'Maltrieve'}
+        zip_files = ['application/zip', 'application/gzip', 'application/x-7z-compressed']
+        rar_files = ['application/x-rar-compressed']
+        inserted_domain = False
+        inserted_sample = False
+
+        # submit domain / IP
+        # TODO: identify if it is a domain or IP and submit accordingly
+        url = "{srv}/api/v1/domains/".format(srv=cfg.crits)
+        domain_data = {
+            'api_key': cfg.crits_key,
+            'username': cfg.crits_user,
+            'source': cfg.crits_source,
+            'domain': url_tag.netloc
+        }
+        try:
+            # Note that this request does NOT go through proxies
+            logging.debug("Domain submission: %s|%r", url, domain_data)
+            domain_response = requests.post(url, headers=headers, data=domain_data, verify=False)
+            # pylint says "Instance of LookupDict has no 'ok' member" but it's wrong, I checked
+            if domain_response.status_code == requests.codes.ok:
+                domain_response_data = domain_response.json()
+                if domain_response_data['return_code'] == 0:
+                    inserted_domain = True
+                else:
+                    logging.info("Submitted domain info %s for %s to CRITs, response was %s",
+                                 domain_data['domain'], md5, domain_response_data)
+            else:
+                logging.info("Submission of %s failed: %d", url, domain_response.status_code)
+        except requests.exceptions.ConnectionError:
+            logging.info("Could not connect to CRITs when submitting domain %s", domain_data['domain'])
+        except requests.exceptions.HTTPError:
+            logging.info("HTTP error when submitting domain %s to CRITs", domain_data['domain'])
+
+        # Submit sample
+        url = "{srv}/api/v1/samples/".format(srv=cfg.crits)
+        if mime_type in zip_files:
+            file_type = 'zip'
+        elif mime_type in rar_files:
+            file_type = 'rar'
+        else:
+            file_type = 'raw'
+        sample_data = {
+            'api_key': cfg.crits_key,
+            'username': cfg.crits_user,
+            'source': cfg.crits_source,
+            'upload_type': 'file',
+            'md5': md5,
+            'file_format': file_type  # must be type zip, rar, or raw
+        }
+        try:
+            # Note that this request does NOT go through proxies
+            sample_response = requests.post(url, headers=headers, files=files, data=sample_data, verify=False)
+            # pylint says "Instance of LookupDict has no 'ok' member" but it's wrong, I checked
+            if sample_response.status_code == requests.codes.ok:
+                sample_response_data = sample_response.json()
+                if sample_response_data['return_code'] == 0:
+                    inserted_sample = True
+                else:
+                    logging.info("Submitted sample %s to CRITs, response was %r", md5, sample_response_data)
+            else:
+                logging.info("Submission of sample %s failed: %d}", md5, sample_response.status_code)
+        except requests.exceptions.ConnectionError:
+            logging.info("Could not connect to CRITs when submitting sample %s", md5)
+        except requests.exceptions.HTTPError:
+            logging.info("HTTP error when submitting sample %s to CRITs", md5)
+
+        # Create a relationship for the sample and domain
+        url = "{srv}/api/v1/relationships/".format(srv=cfg.crits)
+        if (inserted_sample and inserted_domain):
+            relationship_data = {
+                'api_key': cfg.crits_key,
+                'username': cfg.crits_user,
+                'source': cfg.crits_source,
+                'right_type': domain_response_data['type'],
+                'right_id': domain_response_data['id'],
+                'left_type': sample_response_data['type'],
+                'left_id': sample_response_data['id'],
+                'rel_type': 'Downloaded_From',
+                'rel_confidence': 'high',
+                'rel_date': datetime.datetime.now()
+            }
+            try:
+                # Note that this request does NOT go through proxies
+                relationship_response = requests.post(url, headers=headers, data=relationship_data, verify=False)
+                # pylint says "Instance of LookupDict has no 'ok' member"
+                if relationship_response.status_code != requests.codes.ok:
+                    logging.info("Submitted relationship info for %s to CRITs, response was %r",
+                                 md5, domain_response_data)
+            except requests.exceptions.ConnectionError:
+                logging.info("Could not connect to CRITs when submitting relationship for sample %s", md5)
+            except requests.exceptions.HTTPError:
+                logging.info("HTTP error when submitting relationship for sample %s to CRITs", md5)
+                return True
+        else:
+            return False
+
+
+def upload_vxcage(response, md5, cfg):
+    if response:
+        url_tag = urlparse(response.url)
+        files = {'file': (md5, response.content)}
+        tags = {'tags': url_tag.netloc + ',Maltrieve'}
+        url = "{srv}/malware/add".format(srv=cfg.vxcage)
+        headers = {'User-agent': 'Maltrieve'}
+        try:
+            # Note that this request does NOT go through proxies
+            response = requests.post(url, headers=headers, files=files, data=tags)
+            response_data = response.json()
+            logging.info("Submitted %s to VxCage, response was %d", md5, response_data["message"])
+        except requests.exceptions.ConnectionError:
+            logging.info("Could not connect to VxCage, will attempt local storage")
+            return False
+        else:
+            return True
 
 
 # This gives cuckoo the URL instead of the file.
-def upload_cuckoo(data, sample, cfg):
-    if data:
-        files = {'file': (sample.file_md5, data)}
-        url = cfg.cuckoo + "/tasks/create/file"
-        data = dict(
-            priority=cfg.priority,
-            custom=json.dumps(sample.__dict__),
-        )
+def upload_cuckoo(response, md5, cfg):
+    if response:
+        data = {'url': response.url}
+        url = "{srv}/tasks/create/url".format(srv=cfg.cuckoo)
         headers = {'User-agent': 'Maltrieve'}
         try:
-            response = requests.post(url, data=data, headers=headers, files=files)
-            try:
-                response_data = response.json()
-            except ValueError:
-                logging.exception("While decoding %s", response.text)
-            else:
-                logging.info("Submitted %s to Cuckoo, task ID %d", sample.file_md5, response_data["task_id"])
+            response = requests.post(url, headers=headers, data=data)
+            response_data = response.json()
+            logging.info("Submitted %s to Cuckoo, task ID %d", md5, response_data["task_id"])
+        except requests.exceptions.ConnectionError:
+            logging.info("Could not connect to Cuckoo, will attempt local storage")
+            return False
+        else:
+            return True
+
+# This gives cuckoo the URL instead of the file.
+def upload_cuckoo_dist(response, md5, cfg):
+    if response:
+        data = {'priority': int(cfg.priority)}
+        files = {'file': (md5, response.content)}
+        url = cfg.cuckoo_dist + "/api/task"
+        headers = {'User-agent': 'Maltrieve'}
+        try:
+            response = requests.post(url, headers=headers, data=data, files=files)
+            response_data = response.json()
+            logging.info("Submitted %s to Cuckoo, task ID %d", md5, response_data["task_id"])
         except requests.exceptions.ConnectionError:
             logging.info("Could not connect to Cuckoo, will attempt local storage")
             return False
@@ -90,190 +309,131 @@ def upload_cuckoo(data, sample, cfg):
             return True
 
 
-def process_xml_list_desc(response, source):
+def upload_viper(response, md5, cfg):
+    if response:
+        url_tag = urlparse(response.url)
+        files = {'file': (md5, response.content)}
+        tags = {'tags': url_tag.netloc + ',Maltrieve'}
+        url = "{srv}/file/add".format(srv=cfg.viper)
+        headers = {'User-agent': 'Maltrieve'}
+        try:
+            # Note that this request does NOT go through proxies
+            response = requests.post(url, headers=headers, files=files, data=tags)
+            response_data = response.json()
+            logging.info("Submitted %s to Viper, response was %s", md5, response_data["message"])
+        except requests.exceptions.ConnectionError:
+            logging.info("Could not connect to Viper, will attempt local storage")
+            return False
+        else:
+            return True
+
+
+def save_malware(response, cfg):
+    url = response.url
+    data = response.content
+    mime_type = magic.from_buffer(data, mime=True)
+    if mime_type in cfg.black_list:
+        logging.info('%s in ignore list for %s', mime_type, url)
+        return False
+    if cfg.white_list:
+        if mime_type in cfg.white_list:
+            pass
+        else:
+            logging.info('%s not in whitelist for %s', mime_type, url)
+            return False
+
+    # Hash and log
+    md5 = hashlib.md5(data).hexdigest()
+    logging.info("%s hashes to %s", url, md5)
+
+    # Assume that external repo means we don't need to write to file as well.
+    stored = False
+    # Submit to external services
+
+    # TODO: merge these
+    if cfg.vxcage:
+        stored = upload_vxcage(response, md5, cfg) or stored
+    if cfg.cuckoo:
+        stored = upload_cuckoo(response, md5, cfg) or stored
+    if cfg.cuckoo_dist:
+        stored = upload_cuckoo_dist(response, md5, cfg) or stored
+    if cfg.viper:
+        stored = upload_viper(response, md5, cfg) or stored
+    if cfg.crits:
+        stored = upload_crits(response, md5, cfg) or stored
+    # else save to disk
+    if not stored:
+        if cfg.sort_mime:
+            # set folder per mime_type
+            sort_folder = mime_type.replace('/', '_')
+            if not os.path.exists(os.path.join(cfg.dumpdir, sort_folder)):
+                os.makedirs(os.path.join(cfg.dumpdir, sort_folder))
+            store_path = os.path.join(cfg.dumpdir, sort_folder, md5)
+        else:
+            store_path = os.path.join(cfg.dumpdir, md5)
+        with open(store_path, 'wb') as f:
+            f.write(data)
+            logging.info("Saved %s to dump dir", md5)
+    return True
+
+
+def process_xml_list_desc(response):
     feed = feedparser.parse(response)
-    urls = list()
+    urls = set()
 
     for entry in feed.entries:
         desc = entry.description
-        try:
-            if "status: offline" in desc:
-                continue
-            try:
-                file_md5 = re.search(r'MD5(\s+hash)?:\s*([a-f0-9]{32})', desc).group(2)
-            except AttributeError:
-                file_md5 = None
-
-            origin = dict()
-            try:
-                origin['cc'] = re.search(r'Country:\s*([A-Z]{2})[,$\s]', desc).group(1)
-            except AttributeError:
-                pass
-            try:
-                origin['ip'] = re.search(r'IP [aA]ddress:\s*([^,$\s]+)[,$\s]', desc).group(1)
-            except AttributeError:
-                pass
-            try:
-                origin['asn'] = re.search(r'ASN:\s*([0-9]+)[,$\s]', desc).group(1)
-            except AttributeError:
-                pass
-
-            try:
-                description = re.search(r'Description:\s*([^$]+)', desc).group(1)
-            except AttributeError:
-                description = None
-
-            url = desc.split(' ')[1].rstrip(',')
-            if url == '':
-                continue
-            if url == '-':
-                url = desc.split(' ')[4].rstrip(',')
-            url = re.sub('&amp;', '&', url)
-            if not re.match('http', url):
-                url = 'http://' + url
-            urls.append(Namespace(
-                url=url,
-                description=description,
-                source=source,
-                file_md5=file_md5,
-                origin=origin,
-            ))
-        except Exception:
-            logging.exception("Error parsing %s description: %s", source, desc)
+        url = desc.split(' ')[1].rstrip(',')
+        if url == '':
+            continue
+        if url == '-':
+            url = desc.split(' ')[4].rstrip(',')
+        url = re.sub('&amp;', '&', url)
+        if not re.match('http', url):
+            url = 'http://' + url
+        urls.add(url)
 
     return urls
 
 
-def process_malwaredomainlist(response):
-    return process_xml_list_desc(response, 'malwaredomainlist')
-
-def process_zeustracker(response):
-    return process_xml_list_desc(response, 'zeustracker')
-
-def process_malc0de(response):
-    return process_xml_list_desc(response, 'malc0de')
-
 def process_xml_list_title(response):
     feed = feedparser.parse(response)
-    return [re.sub('&amp;', '&', entry.title) for entry in feed.entries]
-
-def process_vxvault(response):
-    return process_simple_list(response, 'vxvault')
-
-def process_malwareurls(response):
-    return process_simple_list(response, 'malwareurls')
-
-def process_minotaur(response):
-    return process_simple_list(response, 'minotaur')
+    urls = set([re.sub('&amp;', '&', entry.title) for entry in feed.entries])
+    return urls
 
 
-def process_simple_list(response, source):
-    results = list()
-    for line in response.split('\n'):
-        if not line.startswith('http'):
-            continue
-        line = re.sub('&amp;', '&', line.strip())   
-        results.append(
-            Namespace(
-                source=source,
-                url=line))
-    return results
-
-
-def process_dasmalwerk(response):
-    response = json.loads(response)
-    return [
-        Namespace(
-            url="http://dasmalwerk.eu/zippedMalware/" + item['Filename'] + ".zip",
-            source='dasmalwerk',
-            origin=dict(
-                seen=item['Detectiondate'],
-            ))
-        for item in response['items']
-        if 'Filename' in item
-    ]
+def process_simple_list(response):
+    urls = set([re.sub('&amp;', '&', line.strip()) for line in response.split('\n') if line.startswith('http')])
+    return urls
 
 
 def process_urlquery(response):
     soup = BeautifulSoup(response, "html.parser")
-    urls = list()
-    first = True
-    for table in soup.find_all("table"):
-        headers = [X.text for X in table.find_all('th')]
-        if not len(headers) or len(headers) < 4:
-            continue
-        if headers[1] != 'UQ / IDS / BL':
-            continue
-        for row in table.find_all("tr"):
-            if first:  #  Skip first row, it's the header
-                first = False
-                continue
-            cols = row.find_all('td')
-            urlquery_id = None
-            links = row.find_all('a')
-            if len(links):
-                try:
-                    href = links[0].get('href')
-                    if 'report.php' in href:
-                        urlquery_id = int(href.split('=')[1])
-                except ValueError:
-                    continue
-            if not urlquery_id:
-                continue
-
-            cols_text = [X.text for X in cols]
-            origin = dict(
-                seen=cols_text[0],
-                ip=cols_text[3],
-            )
-
-            try:
-                flag_src = cols[3].find_all('img')[0].get('src')
-                if 'images/flags/' in flag_src:
-                    origin_cc = flag_src.split('.')[0].split('/')[-1]
-                    if origin_cc.isalpha() and len(origin_cc) == 2:
-                        origin['cc'] = origin_cc.upper()
-            except Exception:
-                pass
-
-            detection_stats = map(int, cols_text[1].split('-'))
-            if not any(detection_stats):
-                continue
-            urls.append(
-                Namespace(
-                    source='urlquery',
-                    urlquery=dict(
-                        id=urlquery_id,
-                        stat=detection_stats,
-                    ),
-                    origin=origin,
-                    url='http://' + re.sub('&amp;', '&', cols_text[2])))
+    urls = set()
+    for t in soup.find_all("table", class_="test"):
+        for a in t.find_all("a"):
+            urls.add('http://' + re.sub('&amp;', '&', a.text))
     return urls
 
 
 def process_malwaredb(response):
     # malwaredb.malekal.com
-    return [
-        Namespace(
-            source='malwaredb',
-            file_md5=match,
-            url="http://malwaredb.malekal.com/files.php?file=%s" % (match,))
+    return set([
+        "http://malwaredb.malekal.com/files.php?file=%s" % (match,)
         for match in re.findall(r'files.php\?file=([a-f0-9]+)"', response, re.MULTILINE)
-    ]
+    ])
 
 
 def process_malshare(response, cfg):
     # https://github.com/robbyFux/Ragpicker/blob/master/src/crawler/malShare.py
-    api_key = cfg.malshare
+    api_key = cfg.malshare_key
     if not api_key:
         raise Exception("MalShare API key not configured, skip")
-    return [
-        Namespace(
-            source='malshare',
-            url="http://api.malshare.com/sampleshare.php?action=getfile&api_key=%s&hash=%s" % (api_key, file_hash),
-            file_md5=file_hash)
+    return set([
+        "https://api.malshare.com/sampleshare.php?action=getfile&api_key=%s&hash=%s" % (api_key, file_hash)
         for file_hash in response.split('\n')
-    ]
+    ])
+
 
 
 def chunker(seq, size):
@@ -281,335 +441,140 @@ def chunker(seq, size):
 
 
 def setup_args(args):
-    parser = ArgumentParser()
-    parser.add_argument('-q', '--quiet', action='store_true',
-                        help="Don't print results to console")
-    parser.add_argument('-v', '--verbose', action='store_const',
-                        dest="loglevel", const=logging.INFO,
-                        help="Log informational messages")
-    parser.add_argument('--test', action='store_true', help="Test sources")
-    parser.add_argument('--debug', action='store_const', dest="loglevel",
-                        const=logging.DEBUG, default=logging.WARNING,
-                        help="Log debugging messages")
+    parser = argparse.ArgumentParser()
     parser.add_argument("-p", "--proxy",
-                        help="Define HTTP proxy, e.g. socks5://localhost:9050")
-    parser.add_argument("-d", "--dumpdir", default=os.path.join(os.getcwd(), "archive"),
+                        help="Define HTTP proxy as address:port")
+    parser.add_argument("-d", "--dumpdir",
                         help="Define dump directory for retrieved files")
-    parser.add_argument("-i", "--inputfile", nargs='*', help="Text file with URLs to retrieve")
-    parser.add_argument("-b", "--blacklist", help="Comma separated mimetype blacklist")
-    parser.add_argument("-w", "--whitelist", help="Comma separated mimetype whitelist")
+    parser.add_argument("-i", "--inputfile", help="File of URLs to process")
+    parser.add_argument("-l", "--logfile",
+                        help="Define file for logging progress")
+    parser.add_argument("-r", "--crits",
+                        help="Dump the file to a Crits instance.",
+                        action="store_true", default=False)
+    parser.add_argument("-v", "--viper",
+                        help="Dump the files to a Viper instance",
+                        action="store_true", default=False)
+    parser.add_argument("-x", "--vxcage",
+                        help="Dump the file to a VxCage instance",
+                        action="store_true", default=False)
     parser.add_argument("-P", "--priority",
                         help="Cuckoo sample priority", default=2)
-    parser.add_argument("-c", "--cuckoo", metavar='URL', help="Cuckoo API")
-    parser.add_argument('-U', '--useragent', help='HTTP User agent', default="Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 7.1; Trident/5.0)")
-    parser.add_argument("--malshare",
+    parser.add_argument("-c", "--cuckoo",
+                        help="Enable Cuckoo analysis", action="store_true", default=False)
+    parser.add_argument("-C", "--cuckoo-dist",
+                        help="Enable Distributed Cuckoo analysis", default=None)
+    parser.add_argument("--malshare-key",
                         help="Malshare key", default=None)
-    parser.add_argument("-t", "--timeout", type=int, default=20,
-                        help="HTTP request/response timeout (default 20)")
-    parser.add_argument("-N", "--concurrency", type=int, default=5,
-                        help="HTTP request/response concurrency (default 5)")
     parser.add_argument("-s", "--sort_mime",
                         help="Sort files by MIME type", action="store_true", default=False)
-    parser.add_argument("-L", "--local",
-                        help="Don't search external sources", action="store_true", default=False)
-    parser.add_argument("-z", "--zip", metavar="FILE", nargs='*')
+    parser.add_argument("--config", help="Alternate config file (default maltrieve.cfg)")
+
     return parser.parse_args(args)
 
 
-def check_options(opts):
-    logging.basicConfig(level=opts.loglevel)
-
-    check_proxy(opts)
-
-    if opts.proxy:
-        opts.proxy = {'http': opts.proxy, 'https': opts.proxy}
-
-    opts.blacklist = opts.blacklist.strip().split(',') if opts.blacklist else []
-    opts.whitelist = opts.whitelist.strip().split(',') if opts.whitelist else []
-
-    if not os.path.exists(opts.dumpdir):
-        try:
-            os.makedirs(opts.dumpdir)
-        except OSError:
-            logging.error('Could not create %s, using default', opts.dumpdir)
-            sys.exit(111)
-    try:
-        fd, temp_path = tempfile.mkstemp(dir=opts.dumpdir)
-    except OSError:
-        logging.error('Could not open %s for writing, using default', opts.dumpdir)
-        sys.exit(112)
+def load_hashes(filename="hashes.json"):
+    if os.path.exists(filename):
+        with open(filename, 'rb') as hashfile:
+            hashes = set(json.load(hashfile))
+        logging.info('Loaded hashes from %s', filename)
     else:
-        os.close(fd)
-        os.remove(temp_path)
+        hashes = set()
+    return hashes
 
 
-class MaltriveDatabase(object):
-    def __init__(self, config):
-        self.db = sqlite3.connect(config.dumpdir + '/malware.db')
-        self.cur = self.db.cursor()
-        self.cur.execute("""
-CREATE TABLE IF NOT EXISTS entries (
-    id INTEGER PRIMARY KEY,
-    source VARCHAR(128) NOT NULL,
-    mime_type VARCHAR(64) NOT NULL,
-    url VARCHAR(512) NOT NULL,
-    url_sha1 VARCHAR(10) NOT NULL,
-    file_sha256 VARCHAR(10) NOT NULL,
-    file_sha1 VARCHAR(10) NOT NULL,
-    file_md5 VARCHAR(10) NOT NULL,
-    stamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-)""")
-        self.commit()
-
-    def commit(self):
-        self.db.commit()
-
-    def only_unknown(self, sample_list):
-        return [sample for sample in sample_list
-                if not self.exists(sample)]
-
-    def normalise(self, sample):
-        if not getattr(sample, 'url_sha1', None):
-            sample.url_sha1 = hashstr(sample.url, hashlib.sha1)
-
-    def insert(self, sample):
-        self.normalise(sample)
-        pairs = [(key, value) for key, value in sample.__dict__.items()
-                 if key[0] != '_']
-        keys = ','.join([x[0] for x in pairs])
-        placeholders = ','.join(['?' for _ in pairs])
-        values = [x[1] for x in pairs]
-        sql = "INSERT INTO entries (%s) VALUES (%s)" % (keys, placeholders)
-        self.cur.execute(sql, values)
-
-    def exists(self, sample):
-        self.normalise(sample)
-        search_keys = ('url_sha1', 'file_sha1', 'file_md5')
-        wheres = ' OR '.join([
-            "%s = ?" % (key,)
-            for key in sample.__dict__.keys()
-            if key in search_keys
-        ])
-        if not len(wheres):
-            raise RuntimeError("No searchable fields in sample:", sample)
-
-        sql = "SELECT COUNT(id) FROM entries WHERE " + wheres
-        values = [value for key, value in sample.__dict__.items()
-                  if key in search_keys]
-        self.cur.execute(sql, values)
-        res = self.cur.fetchone()
-        return int(res[0]) > 0
+def save_hashes(hashes, filename='hashes.json'):
+    logging.info('Dumping hashes to %s', filename)
+    with open(filename, 'w') as hashfile:
+        json.dump(list(hashes), hashfile, indent=2)
 
 
-def zip_tryopen(handle, filename):
-    passwords = [None, 'infected', 'malware']
-    last_error = None
-    while len(passwords):
-        pwd = passwords[0]
+def load_urls(filename='urls.json'):
+    if os.path.exists(filename):
         try:
-            entry = handle.open(filename, pwd=pwd)
-        except RuntimeError as ex:
-            last_error = ex
-        else:
-            last_error = None
-            if pwd is not None:
-                handle.setpassword(pwd)
-            break
-        passwords = passwords[1:]
-    if last_error:
-        raise ex
-    assert entry is not None
-    return entry
+            with open(filename, 'rb') as urlfile:
+                urls = set(json.load(urlfile))
+            logging.info('Loaded urls from %s', filename)
+        except ValueError:  # this usually happens when the file is empty
+            urls = set()
+    else:
+        urls = set()
+    return urls
 
 
-class Maltrieve(object):
-    def __init__(self, args):
-        self.opts = setup_args(args)
-        check_options(self.opts)
-        self.database = MaltriveDatabase(self.opts)
-
-    def save_malware(self, sample, data):
-        if 'mime_type' not in sample:
-            sample.mime_type = magic.from_buffer(data, mime=True)
-        logging.info("Saving malware: %s (%s)", sample.url, sample.mime_type)
-
-        if sample.mime_type in self.opts.blacklist:
-            logging.info('%s in ignore list for %s', sample.mime_type, sample.url)
-            return None
-        if self.opts.whitelist:
-            if sample.mime_type in self.opts.whitelist:
-                pass
-            else:
-                logging.info('%s not in whitelist for %s', sample.mime_type, sample.url)
-                return None
-
-        if not getattr(sample, 'file_md5', None):
-            sample.file_md5 = hashstr(data, hashlib.md5)
-        if not getattr(sample, 'file_sha1', None):
-            sample.file_sha1 = hashstr(data, hashlib.sha1)
-        if not getattr(sample, 'file_sha256', None):
-            sample.file_sha256 = hashstr(data, hashlib.sha256)
-
-        if self.database.exists(sample):
-            logging.info("Sample already exists")
-            return None
-
-        # Assume that external repo means we don't need to write to file as well.
-        stored = False
-        if self.opts.cuckoo:
-            stored = upload_cuckoo(data, sample, self.opts) or stored
-        # else save to disk
-        if not stored:
-            if self.opts.sort_mime:
-                # set folder per mime_type
-                sort_folder = sample.mime_type.replace('/', '_')
-                if not os.path.exists(os.path.join(self.opts.dumpdir, sort_folder)):
-                    os.makedirs(os.path.join(self.opts.dumpdir, sort_folder))
-                store_path = os.path.join(self.opts.dumpdir, sort_folder, sample.file_md5)
-            else:
-                store_path = os.path.join(self.opts.dumpdir, sample.file_md5)
-            with open(store_path, 'wb') as handle:
-                handle.write(data)
-                logging.info("Saved %s to dump dir", sample.file_md5)
-
-        self.database.insert(sample)
-        return sample
-
-    def _find_remote(self):
-        source_urls = {
-            'http://urlquery.net/': process_urlquery,
-            "http://dasmalwerk.eu/api/": process_dasmalwerk,
-            'http://malc0de.com/rss/': process_malc0de,
-            'https://zeustracker.abuse.ch/monitor.php?urlfeed=binaries': process_zeustracker,
-            'http://www.malwaredomainlist.com/hostslist/mdl.xml': process_malwaredomainlist,
-            'http://vxvault.net/URL_List.php': process_vxvault,
-            'http://malwareurls.joxeankoret.com/normal.txt': process_malwareurls,
-            'http://minotauranalysis.com/raw/urls': process_minotaur,
-            'http://malwaredb.malekal.com/': process_malwaredb,
-
-            # XXX: disabled - requires registration of user agent
-            #'http://support.clean-mx.de/clean-mx/rss?scope=viruses&limit=0%2C64': process_xml_list_title,
-        }
-        if self.opts.malshare:
-            source_urls['http://www.malshare.com/daily/malshare.current.txt'] = lambda x: process_malshare(x, self.opts)
-
-        logging.info("Retrieving URLs from %d sources", len(source_urls))
-        headers = {'User-Agent': 'github.com/HarryR/maltrieve'}
-        reqs = [grequests.get(url, timeout=self.opts.timeout, headers=headers, proxies=self.opts.proxy)
-                for url in source_urls]
-        source_lists = grequests.map(reqs)
-        
-        sample_list = list()
-        for response in source_lists:
-            if hasattr(response, 'status_code') and response.status_code == 200:            
-                found_urls = source_urls[response.url](response.text)
-                if not len(found_urls):
-                    logging.warning('Source found no samples at url: %r', response.url)
-                else:
-                    logging.info("Found %d samples at url: %r", len(found_urls), response.url)
-                sample_list.extend(found_urls)
-        return sample_list
-
-    def _find_local(self):
-        """
-        Use local sources, e.g. input files of URLs and zip files, to import
-        malware samples.
-        """
-        sample_list = list()
-
-        if self.opts.inputfile:
-            for inputfile in self.opts.inputfile:
-                with open(inputfile, 'rb') as handle:
-                    found_samples = process_simple_list(handle.read())
-                    if not len(found_samples):
-                        logging.warning("Found no samples in local file %r", inputfile)
-                    else:
-                        logging.info("Found %d samples in local file %r", len(found_samples), inputfile)
-                        sample_list.extend(found_samples)
-
-        if self.opts.zip:
-            for zip_filename in self.opts.zip:
-                handle = ZipFile(zip_filename, 'r')
-                found_samples = list()
-                for entry in handle.infolist():
-                    url = '://'.join([os.path.basename(zip_filename), entry.filename])
-                    found_samples.append(
-                        Namespace(url=url,
-                                  url_sha1=hashstr(url, hashlib.sha1),
-                                  _zip_handle=handle,
-                                  _zip_filename=entry.filename,
-                                  _read=lambda x: zip_tryopen(x._zip_handle, x._zip_filename).read(),
-                                  source='zip'))
-                if not len(found_samples):
-                    logging.warning("Found no samples in local zip file %r", zip_filename)
-                else:
-                    logging.info("Found %d samples in local file %r", len(found_samples), zip_filename)
-                    sample_list.extend(found_samples)
-
-        return sample_list
-
-    def find_samples(self):
-        sample_list = list()
-        sample_list.extend(self._find_local())
-        if not self.opts.local:
-            sample_list.extend(self._find_remote())
-        return sample_list
-
-    def import_sample(self, sample):
-        logging.info("Importing sample: %r", sample.url)
-        readfn = getattr(sample, '_read', None)
-        if readfn:
-            assert callable(readfn)
-            data = readfn(sample)
-        else:
-            headers = {'User-Agent': self.opts.useragent}
-            try:
-                resp = requests.get(sample.url, headers=headers,
-                                    proxies=self.opts.proxy,
-                                    timeout=self.opts.timeout)
-                if resp.status_code != 200:
-                    return None
-                data = resp.content
-            except Exception:
-                return None
-        if data:
-            return self.save_malware(sample, data)
-
-    def import_samples(self, sample_list):
-        # Filter out known/duplicate samples
-        len_before = len(sample_list)
-        sample_list = self.database.only_unknown(sample_list)
-        logging.info("Importing %d malware samples (%d duplicates)",
-                     len(sample_list), len_before - len(sample_list))
-        pool = gevent.pool.Pool(self.opts.concurrency)
-        for idx, sample in enumerate(sample_list):
-            pool.add(gevent.spawn(self.import_sample, sample))
-            if idx % 10 == 0:
-                self.database.commit()
-        pool.join()
-        self.database.commit()
+def save_urls(urls, filename='urls.json'):
+    logging.info('Dumping past URLs to %s', filename)
+    with open(filename, 'w') as urlfile:
+        json.dump(list(urls), urlfile, indent=2)
 
 
 def main():
     resource.setrlimit(resource.RLIMIT_NOFILE, (2048, 2048))
-    maltrieve = Maltrieve(sys.argv[1:])
-    try:
-        sample_list = maltrieve.find_samples()
-        if not len(sample_list):
-            logging.error('No samples to download - exiting')
-            return 100
-        if maltrieve.opts.test:
-            for sample in sample_list:
-                print(sample)
-            return 1
-        maltrieve.import_samples(sample_list)
-    finally:
-        maltrieve.database.commit()
-    return 0
+    hashes = set()
+    past_urls = set()
+
+    args = setup_args(sys.argv[1:])
+    if args.config:
+        cfg = config(args, args.config)
+    else:
+        cfg = config(args, 'maltrieve.cfg')
+    cfg.check_proxy()
+
+    hashes = load_hashes('hashes.json')
+    past_urls = load_urls('urls.json')
+
+    print("Processing source URLs")
+
+    # TODO: Replace with plugins
+    source_urls = {
+        'http://www.malwaredomainlist.com/hostslist/mdl.xml': process_xml_list_desc,
+        'http://malc0de.com/rss/': process_xml_list_desc,
+        'http://vxvault.net/URL_List.php': process_simple_list,
+        'http://urlquery.net/': process_urlquery,
+        'http://malwareurls.joxeankoret.com/normal.txt': process_simple_list,
+        'http://malwaredb.malekal.com/': process_malwaredb
+    }
+    if cfg.malshare_key:
+        source_urls['https://www.malshare.com/daily/malshare.current.txt'] = lambda x: process_malshare(x, cfg)
+    headers = {'User-Agent': 'Maltrieve'}
+
+    reqs = [grequests.get(url, timeout=60, headers=headers, proxies=cfg.proxy)
+            for url in source_urls]
+    source_lists = grequests.map(reqs)
+
+    print("Processing found malware links")
+    headers['User-Agent'] = cfg.useragent
+    malware_urls = set()
+    for response in source_lists:
+        if hasattr(response, 'status_code') and response.status_code == 200:            
+            found_urls = source_urls[response.url](response.text)
+            malware_urls.update(found_urls)
+
+    if cfg.inputfile:
+        with open(cfg.inputfile, 'rb') as f:
+            moar_urls = list(f)
+        malware_urls.update(moar_urls)
+
+    print("Downloading %d malware samples" % (len(malware_urls),))
+    malware_urls -= past_urls
+    reqs = [grequests.get(url, timeout=60, headers=headers, proxies=cfg.proxy)
+	    for url in malware_urls]
+    for chunk in chunker(reqs, 32):
+        malware_downloads = grequests.map(chunk)
+        for each in malware_downloads:
+            if not each or each.status_code != 200:
+                continue
+            if save_malware(each, cfg):
+                past_urls.add(each.url)
+
+    print("Completed downloads")
+
+    save_urls(past_urls, 'urls.json')
+    save_hashes(hashes, 'hashes.json')
 
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        main()
     except KeyboardInterrupt:
-        pass
+        sys.exit()
