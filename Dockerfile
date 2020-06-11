@@ -40,7 +40,7 @@ RUN apt-get install argparse \
     gevent \
     greenlet \
     grequests \
-    python-magic \
+    python-magic
     
 RUN rm -rf /var/lib/apt/lists/* && \
   pip install --upgrade pip && \
