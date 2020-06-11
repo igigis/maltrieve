@@ -34,7 +34,14 @@ RUN apt-get install -y --no-install-recommends \
     python2.7-dev \
     python-pip \
     python-setuptools
-
+    
+RUN apt-get install argparse \
+    feedparser \
+    gevent \
+    greenlet \
+    grequests \
+    python-magic \
+    
 RUN rm -rf /var/lib/apt/lists/* && \
   pip install --upgrade pip && \
   groupadd -r maltrieve && \
@@ -46,8 +53,8 @@ RUN mkdir -p /archive && \
 WORKDIR /home
 RUN mkdir -p /home/maltrieve
 
-COPY requirements.txt maltrieve/
-RUN pip install -r /home/maltrieve/requirements.txt
+# COPY requirements.txt maltrieve/
+# RUN pip install -r /home/maltrieve/requirements.txt
 
 COPY . /home/maltrieve
 RUN cd maltrieve && \
