@@ -35,7 +35,7 @@ RUN apt-get install -y --no-install-recommends \
     python-pip \
     python-setuptools
     
-RUN apt-get install argparse \
+RUN pip install argparse \
     feedparser \
     gevent \
     greenlet \
