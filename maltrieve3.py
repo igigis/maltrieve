@@ -566,7 +566,7 @@ def main():
         'http://www.malwaredomainlist.com/hostslist/mdl.xml': process_xml_list_desc,
         'http://malc0de.com/rss/': process_xml_list_desc,
         'http://vxvault.net/URL_List.php': process_simple_list,
-        'http://urlquery.net/': process_urlquery,
+        'https://urlquery.net/': process_urlquery,
         'http://malwareurls.joxeankoret.com/normal.txt': process_simple_list,
         'http://malwaredb.malekal.com/': process_malwaredb
     }
