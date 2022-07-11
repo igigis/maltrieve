@@ -110,6 +110,8 @@ Red Hat systems will need to ensure that the user is added to the `/etc/cron.all
 
 ## Malshare API Key
 
+To register for an API key on the Malshare website "https://malshare.com/register.php", simply fill out the form with your name, and email address. Once you have registered for an account, you will be able to log in and access your unique API key. To modify the maltrieve.cfg file with your new key, simply open the file in a text editor and replace the placeholder text with your key. Once you have saved the file, you will be able to use Maltrieve to download samples from Malshare.
+
 For the Malshare daily dataset, register for an API key at https://malshare.com/. Modify the maltrieve.cfg file with your registered Malshare API key.
 
 ## Other Tools
