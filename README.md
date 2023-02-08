@@ -37,7 +37,7 @@ Other improvements include:
 
 Maltrieve requires the following dependencies:
 
-* Python 2 plus header files (2.6 should be sufficient)
+* Python 2 or 3 plus header files (2.6 should be sufficient)
 * [BeautifulSoup](http://www.crummy.com/software/BeautifulSoup/) version 4
 * [feedparser](https://pypi.python.org/pypi/feedparser)
 * [python-magic](https://pypi.python.org/pypi/python-magic/)
