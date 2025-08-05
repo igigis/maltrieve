@@ -19,7 +19,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/
 
 # Instructions
-# Python 3.x
+# Python 3.9
 
 import argparse
 import configparser
