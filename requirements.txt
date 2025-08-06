@@ -4,4 +4,5 @@ feedparser
 grequests
 python-magic
 requests
+certifi
 beautifulsoup4
